@@ -440,7 +440,10 @@ class LMCacheConnectorV1Impl:
 
         attn_metadata = forward_context.attn_metadata
         if attn_metadata is None:
-            logger.warning("In connector.start_load_kv, but the attn_metadata is None")
+            # Short-circuit: no layerwise loading can proceed without metadata.
+            # Ensure no stale retrievers remain from previous steps to avoid waits.
+            logger.warning("In connector.start_load_kv, but the attn_metadata is None; short-circuit and clear retrievers")
+            self.layerwise_retrievers = []
             return
 
         assert self.lmcache_engine is not None
@@ -529,12 +532,20 @@ class LMCacheConnectorV1Impl:
         Args:
             layer_name: the name of that layer
         """
-        if self.layerwise_retrievers:
-            logger.debug(f"Waiting for layer {self.current_layer} to be loaded")
+        # If no layerwise retrievers were prepared (e.g., no metadata/zero tokens),
+        # return immediately to avoid deadlocks.
+        if not self.layerwise_retrievers:
+            return
+
+        logger.debug(f"Waiting for layer {self.current_layer} to be loaded")
 
         # Wait for the layer to be loaded
         for layerwise_retriever in self.layerwise_retrievers:
-            ret_token_mask = next(layerwise_retriever)
+            try:
+                ret_token_mask = next(layerwise_retriever)
+            except StopIteration:
+                # Retriever already completed; continue.
+                ret_token_mask = None
 
             if self.current_layer == self.num_layers - 1:
                 assert ret_token_mask is not None
