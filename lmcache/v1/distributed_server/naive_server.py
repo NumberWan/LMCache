@@ -6,6 +6,8 @@ import ctypes
 import socket
 import threading
 import time
+import logging
+import traceback
 
 # Third Party
 import torch
@@ -318,30 +320,78 @@ class NaiveDistributedServer(DistributedServerInterface):
         """
         Handle the client.
         """
+        # Ensure we always have a file handler for deep debug if not present
+        if not any(isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', '').endswith('test.txt') for h in logger.handlers):
+            try:
+                fh = logging.FileHandler("/ms_test2/w00917303/test/test.txt", encoding="utf-8")
+                fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+                fh.setFormatter(fmt)
+                logger.addHandler(fh)
+            except Exception:
+                # If file handler cannot be added, continue with existing handlers
+                pass
+
         addr = writer.get_extra_info("peername")
         server_socket = writer.get_extra_info("socket")
         server_socket.setblocking(False)  # ensure non-blocking
-        logger.info(f"Connected by {addr}")
+        
+        conn_id = f"{addr}-{id(writer)}"
+        logger.info(f"[{conn_id}] Connected")
+
+        # Simple phase tracker
+        phase = "init"
+        phase_start = time.perf_counter()
+
+        def enter(p: str):
+            nonlocal phase, phase_start
+            phase = p
+            phase_start = time.perf_counter()
+
+        alive = True
+
+        async def watchdog():
+            while alive:
+                await asyncio.sleep(5)
+                try:
+                    logger.debug(f"[{conn_id}] watchdog phase={phase} elapsed={time.perf_counter()-phase_start:.3f}s")
+                except Exception:
+                    pass
+
+        wd_task = asyncio.create_task(watchdog())
+
+        async def with_timeout(coro, timeout_s: float, when: str):
+            try:
+                return await asyncio.wait_for(coro, timeout_s)
+            except asyncio.TimeoutError:
+                logger.warning(f"[{conn_id}] timeout at phase={when}")
+                raise
 
         try:
             while True:
-                header = await self.receive_all_server(
-                    reader, ClientMetaMessage.packlength()
+                enter("read_header")
+                header = await with_timeout(
+                    self.receive_all_server(reader, ClientMetaMessage.packlength()),
+                    10.0,
+                    "read_header",
                 )
                 if not header:
+                    logger.debug(f"[{conn_id}] client closed during header read")
                     break
+                logger.debug(f"[{conn_id}] header read in {time.perf_counter()-phase_start:.6f}s")
+
+                enter("deserialize_header")
                 meta = ClientMetaMessage.deserialize(header)
 
                 match meta.command:
                     case Constants.CLIENT_GET:
+                        enter("handle_get")
                         t0 = time.perf_counter()
 
-                        memory_obj = await self.handle_get(meta.key)
-
-                        # TODO(Jiayi): Refactor the following code to `handle_get`
+                        memory_obj = await with_timeout(self.handle_get(meta.key), 30.0, "handle_get")
                         t1 = time.perf_counter()
 
                         if memory_obj is not None:
+                            enter("send_meta")
                             writer.write(
                                 ServerMetaMessage(
                                     Constants.SERVER_SUCCESS,
@@ -351,21 +401,20 @@ class NaiveDistributedServer(DistributedServerInterface):
                                     memory_obj.get_shape(),
                                 ).serialize()
                             )
-                            await writer.drain()
-
+                            await with_timeout(writer.drain(), 10.0, "drain_meta")
                             t2 = time.perf_counter()
 
+                            enter("send_payload")
                             writer.write(memory_obj.byte_array)
-                            await writer.drain()
+                            await with_timeout(writer.drain(), 30.0, "drain_payload")
                             memory_obj.ref_count_down()
-
                             t3 = time.perf_counter()
-                            logger.debug(
-                                f"Time to get data: {t1 - t0}, "
-                                f"time to send meta: {t2 - t1}, "
-                                f"time to send data: {t3 - t2}"
+
+                            logger.info(
+                                f"[{conn_id}] get ok; get={t1 - t0:.6f}s meta={t2 - t1:.6f}s data={t3 - t2:.6f}s"
                             )
                         else:
+                            enter("send_fail")
                             writer.write(
                                 ServerMetaMessage(
                                     Constants.SERVER_FAIL,
@@ -375,14 +424,26 @@ class NaiveDistributedServer(DistributedServerInterface):
                                     torch.Size((0, 0, 0, 0)),
                                 ).serialize()
                             )
-                            await writer.drain()
+                            await with_timeout(writer.drain(), 10.0, "drain_fail")
 
                     case Constants.CLIENT_PUT:
                         await self.handle_put(meta, reader, writer)
 
+        except Exception as e:
+            logger.error(f"[{conn_id}] exception at phase={phase}: {e}\n{traceback.format_exc()}")
         finally:
-            writer.close()
-            await writer.wait_closed()
+            alive = False
+            try:
+                enter("close")
+                writer.close()
+                await with_timeout(writer.wait_closed(), 5.0, "wait_closed")
+            except Exception as e:
+                logger.warning(f"[{conn_id}] close/wait_closed error at phase={phase}: {e}")
+            try:
+                wd_task.cancel()
+            except Exception:
+                pass
+            logger.info(f"[{conn_id}] Disconnected at phase={phase}")
 
     async def start(self):
         """
