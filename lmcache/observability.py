@@ -213,9 +213,11 @@ class LMCStatsMonitor:
                 
                 # Check if we have request_id from router
                 if not self.current_request_id:
-                    print(f"DEBUG: No request_id from router yet, marking for pending export")
-                    self._pending_export = True
-                    return
+                    print(f"DEBUG: No request_id from router yet, using LMCache's own request_id")
+                    # Use LMCache's own request_id format for now
+                    import time
+                    self.current_request_id = f"lmcache_{int(time.time() * 1000)}"
+                    print(f"DEBUG: Generated LMCache request_id: {self.current_request_id}")
                 
                 # Check if we should only export prefill phase data
                 if self.prefill_only_export:
