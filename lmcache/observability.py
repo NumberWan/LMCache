@@ -152,6 +152,10 @@ class LMCStatsMonitor:
         self.auto_csv_export = True
         self.csv_output_file = "/home/w00917303/vllm_lmcache_auto.csv"
         self.request_counter = 0
+        
+        # Processing time tracking
+        self.current_request_start_time = None
+        self.current_request_id = None
 
     @thread_safe
     def on_lookup_request(self, num_tokens: int):
@@ -161,6 +165,11 @@ class LMCStatsMonitor:
         """
         self.interval_lookup_requests += 1
         self.interval_lookup_tokens += num_tokens
+        
+        # Start timing for this request
+        import time
+        self.current_request_start_time = time.time()
+        self.current_request_id = f"lmcache_request_{int(time.time() * 1000)}"
 
     @thread_safe
     def on_lookup_finished(self, num_hit_tokens: int):
@@ -507,14 +516,21 @@ class LMCStatsMonitor:
     def _auto_export_to_csv(self):
         """Auto export current stats to CSV (internal method)"""
         try:
-            self.request_counter += 1
-            request_id = f"auto_request_{self.request_counter}"
+            # Calculate processing time
+            processing_time = 0.0
+            if self.current_request_start_time:
+                import time
+                processing_time = time.time() - self.current_request_start_time
+            
+            # Use current request ID or generate one
+            request_id = self.current_request_id or f"auto_request_{self.request_counter}"
             
             # Get current stats and clear them for next request
             current_stats = {
                 'timestamp': self._get_current_timestamp(),
                 'request_id': request_id,
                 'instance_id': self._get_instance_id(),
+                'processing_time_ms': round(processing_time * 1000, 3),
                 'retrieve_requests': self.interval_retrieve_requests,
                 'store_requests': self.interval_store_requests,
                 'lookup_requests': self.interval_lookup_requests,
@@ -587,6 +603,15 @@ class LMCStatsMonitor:
         self.interval_remote_ping_latency = 0
         self.interval_remote_ping_errors = 0
         self.interval_remote_ping_success = 0
+        
+        # Reset request tracking
+        self.current_request_start_time = None
+        self.current_request_id = None
+    
+    @thread_safe
+    def set_request_id(self, request_id: str):
+        """Set the current request ID for correlation with vLLM router"""
+        self.current_request_id = request_id
 
     @staticmethod
     def DestroyInstance():
