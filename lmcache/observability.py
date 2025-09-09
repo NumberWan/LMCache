@@ -537,19 +537,13 @@ class LMCStatsMonitor:
             # Use current request ID or generate one
             request_id = self.current_request_id or f"{int(time.time() * 1000)}"
             
-            # Decide P2P transfer time: only report when there was actual transfer
-            transfer_events = (
-                self.interval_remote_read_requests + self.interval_remote_write_requests
-            )
-            p2p_time_ms = 0.0 if transfer_events == 0 else round(self.p2p_transfer_duration * 1000, 3)
-
             # Get current stats and clear them for next request
             current_stats = {
                 'timestamp': self._get_current_timestamp(),
                 'request_id': request_id,
                 'instance_id': self._get_instance_id(),
                 'processing_time_ms': round(processing_time * 1000, 3),
-                'p2p_transfer_time_ms': p2p_time_ms,
+                'p2p_transfer_time_ms': round(self.p2p_transfer_duration * 1000, 3),
                 'retrieve_requests': self.interval_retrieve_requests,
                 'store_requests': self.interval_store_requests,
                 'lookup_requests': self.interval_lookup_requests,
