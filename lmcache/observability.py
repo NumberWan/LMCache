@@ -192,28 +192,23 @@ class LMCStatsMonitor:
         This function is called when a lookup request is finished.
         It will record the number of tokens hit.
         """
+        print(f"DEBUG: on_lookup_finished called with num_hit_tokens: {num_hit_tokens}")
         self.interval_lookup_hits += num_hit_tokens
         
-        # Auto export to CSV if enabled and there's actual cache activity
+        # Auto export to CSV if enabled
+        print(f"DEBUG: auto_csv_export is {self.auto_csv_export}")
         if self.auto_csv_export:
-            # Only export if there's meaningful cache activity:
-            # - Has lookup hits (cache was actually used)
-            # - Has P2P transfers (remote cache activity)
-            # - Has local cache usage (cache is not empty)
-            has_cache_activity = (
-                num_hit_tokens > 0 or  # Cache hits
-                self.client_read_requests > 0 or  # P2P transfers
-                self.local_cache_usage_bytes > 0  # Local cache has data
-            )
+            # Always export for debugging purposes
+            print(f"DEBUG: on_lookup_finished - interval_lookup_requests: {self.interval_lookup_requests}, num_hit_tokens: {num_hit_tokens}, client_read_requests: {self.client_read_requests}, local_cache_usage_bytes: {self.local_cache_usage_bytes}")
             
-            print(f"DEBUG: on_lookup_finished - num_hit_tokens: {num_hit_tokens}, client_read_requests: {self.client_read_requests}, local_cache_usage_bytes: {self.local_cache_usage_bytes}, has_cache_activity: {has_cache_activity}")
+            # Always export CSV for debugging
+            print(f"DEBUG: Always exporting CSV for debugging")
             
-            if has_cache_activity:
-                # Check if we have request_id from router
-                if not self.current_request_id:
-                    print(f"DEBUG: No request_id from router yet, marking for pending export")
-                    self._pending_export = True
-                    return
+            # Check if we have request_id from router
+            if not self.current_request_id:
+                print(f"DEBUG: No request_id from router yet, marking for pending export")
+                self._pending_export = True
+                return
                 
                 # Check if we should only export prefill phase data
                 if self.prefill_only_export:
