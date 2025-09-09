@@ -147,6 +147,11 @@ class LMCStatsMonitor:
 
         self.retrieve_request_id = 0
         self.store_request_id = 0
+        
+        # Auto CSV export settings
+        self.auto_csv_export = True
+        self.csv_output_file = "/home/w00917303/vllm_lmcache_auto.csv"
+        self.request_counter = 0
 
     @thread_safe
     def on_lookup_request(self, num_tokens: int):
@@ -164,6 +169,10 @@ class LMCStatsMonitor:
         It will record the number of tokens hit.
         """
         self.interval_lookup_hits += num_hit_tokens
+        
+        # Auto export to CSV if enabled
+        if self.auto_csv_export:
+            self._auto_export_to_csv()
 
     @thread_safe
     def on_retrieve_request(self, num_tokens: int) -> int:
@@ -494,6 +503,64 @@ class LMCStatsMonitor:
                 writer.writeheader()
             
             writer.writerow(data)
+    
+    def _auto_export_to_csv(self):
+        """Auto export current stats to CSV (internal method)"""
+        try:
+            self.request_counter += 1
+            request_id = f"auto_request_{self.request_counter}"
+            
+            # Get current stats without clearing
+            current_stats = {
+                'timestamp': self._get_current_timestamp(),
+                'request_id': request_id,
+                'instance_id': self._get_instance_id(),
+                'retrieve_requests': self.interval_retrieve_requests,
+                'store_requests': self.interval_store_requests,
+                'lookup_requests': self.interval_lookup_requests,
+                'requested_tokens': self.interval_requested_tokens,
+                'hit_tokens': self.interval_hit_tokens,
+                'lookup_tokens': self.interval_lookup_tokens,
+                'lookup_hits': self.interval_lookup_hits,
+                'remote_read_requests': self.interval_remote_read_requests,
+                'remote_read_bytes': self.interval_remote_read_bytes,
+                'remote_write_requests': self.interval_remote_write_requests,
+                'remote_write_bytes': self.interval_remote_write_bytes,
+                'remote_ping_latency': self.interval_remote_ping_latency,
+                'remote_ping_errors': self.interval_remote_ping_errors,
+                'remote_ping_success': self.interval_remote_ping_success,
+                'local_cache_usage_bytes': self.local_cache_usage_bytes,
+                'remote_cache_usage_bytes': self.remote_cache_usage_bytes,
+                'local_storage_usage_bytes': self.local_storage_usage_bytes,
+            }
+            
+            # Write to CSV
+            import csv
+            import os
+            file_exists = os.path.exists(self.csv_output_file)
+            with open(self.csv_output_file, 'a', newline='') as csvfile:
+                fieldnames = current_stats.keys()
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                
+                # Write header if file is new
+                if not file_exists:
+                    writer.writeheader()
+                
+                writer.writerow(current_stats)
+                
+        except Exception as e:
+            # Silently handle errors to avoid disrupting LMCache operations
+            pass
+    
+    def _get_current_timestamp(self):
+        """Get current timestamp"""
+        from datetime import datetime
+        return datetime.now().isoformat()
+    
+    def _get_instance_id(self):
+        """Get instance ID from environment or default"""
+        import os
+        return os.environ.get('LMCACHE_INSTANCE_ID', 'vllm_auto')
 
     @staticmethod
     def DestroyInstance():
