@@ -432,16 +432,18 @@ class LMCacheEngine:
                     # TODO(Jiayi): Need to refactor P2P as a storage backend to
                     # clean up the following code.
                     if self.enable_p2p:
-                        # Record start of P2P transfer
-                        self.stats_monitor.on_p2p_transfer_start()
+                        # Client-side timing: measure actual GET duration per transfer
                         logger.debug(f"P2P lookup for key: {key}")
-                        
+                        t_start_ms = time.perf_counter()
                         future_memory_obj = asyncio.run_coroutine_threadsafe(
                             self.distributed_server.issue_get(key),
                             self.distributed_loop,
                         )
                         memory_obj = future_memory_obj.result()
+                        t_end_ms = time.perf_counter()
                         if memory_obj:
+                            # Accumulate client-observed transfer duration for this request
+                            self.stats_monitor.add_p2p_transfer_duration_ms((t_end_ms - t_start_ms) * 1000.0)
                             logger.debug(f"P2P transfer successful for key: {key}")
                             reordered_chunks.append((key, memory_obj, start, end))
                             ret_mask[start:end] = True

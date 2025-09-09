@@ -152,12 +152,10 @@ class NaiveDistributedServer(DistributedServerInterface):
 
         self.storage_manager.put(meta.key, mem_obj, meta.location)
 
-        # Record P2P transfer statistics
+        # Record P2P transfer statistics (bytes/requests only)
         stats_monitor = LMCStatsMonitor.GetOrCreate()
         obj_size = mem_obj.get_size()
         stats_monitor.update_interval_remote_write_metrics(obj_size)
-        # Accumulate transfer duration for receive + store time
-        stats_monitor.add_p2p_transfer_duration_ms((t1 - t0) * 1000.0)
         logger.debug(f"P2P PUT: {obj_size / 1e6:.3f} MB to peer")
 
         t2 = time.perf_counter()
@@ -378,10 +376,7 @@ class NaiveDistributedServer(DistributedServerInterface):
                             memory_obj.ref_count_down()
 
                             t3 = time.perf_counter()
-                            # Accumulate P2P transfer duration: server meta + payload send time
-                            stats_monitor = LMCStatsMonitor.GetOrCreate()
-                            # duration in milliseconds for (t3 - t1), excluding handle_get
-                            stats_monitor.add_p2p_transfer_duration_ms((t3 - t1) * 1000.0)
+                            # Server no longer accumulates client-visible P2P duration
                             logger.debug(
                                 f"Time to get data: {t1 - t0}, "
                                 f"time to send meta: {t2 - t1}, "
