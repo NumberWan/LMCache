@@ -175,7 +175,7 @@ class LMCStatsMonitor:
         # Start timing for this request
         import time
         self.current_request_start_time = time.time()
-        self.current_request_id = f"lmcache_request_{int(time.time() * 1000)}"
+        self.current_request_id = f"{int(time.time() * 1000)}"
 
     @thread_safe
     def on_lookup_finished(self, num_hit_tokens: int):
@@ -535,15 +535,21 @@ class LMCStatsMonitor:
                 processing_time = time.time() - self.current_request_start_time
             
             # Use current request ID or generate one
-            request_id = self.current_request_id or f"auto_request_{self.request_counter}"
+            request_id = self.current_request_id or f"{int(time.time() * 1000)}"
             
+            # Decide P2P transfer time: only report when there was actual transfer
+            transfer_events = (
+                self.interval_remote_read_requests + self.interval_remote_write_requests
+            )
+            p2p_time_ms = 0.0 if transfer_events == 0 else round(self.p2p_transfer_duration * 1000, 3)
+
             # Get current stats and clear them for next request
             current_stats = {
                 'timestamp': self._get_current_timestamp(),
                 'request_id': request_id,
                 'instance_id': self._get_instance_id(),
                 'processing_time_ms': round(processing_time * 1000, 3),
-                'p2p_transfer_time_ms': round(self.p2p_transfer_duration * 1000, 3),
+                'p2p_transfer_time_ms': p2p_time_ms,
                 'retrieve_requests': self.interval_retrieve_requests,
                 'store_requests': self.interval_store_requests,
                 'lookup_requests': self.interval_lookup_requests,
@@ -651,6 +657,19 @@ class LMCStatsMonitor:
         if self.p2p_transfer_start_time:
             self.p2p_transfer_end_time = time.time()
             self.p2p_transfer_duration = self.p2p_transfer_end_time - self.p2p_transfer_start_time
+    
+    @thread_safe
+    def add_p2p_transfer_duration_ms(self, delta_ms: float):
+        """Accumulate P2P transfer duration in milliseconds."""
+        try:
+            if delta_ms is None:
+                return
+            if delta_ms < 0:
+                return
+            # Store in seconds internally
+            self.p2p_transfer_duration += (delta_ms / 1000.0)
+        except Exception:
+            pass
     
     def _is_prefill_phase(self):
         """Check if current request is in prefill phase"""
