@@ -179,7 +179,9 @@ class LMCStatsMonitor:
         # Start timing for this request
         import time
         self.current_request_start_time = time.time()
-        self.current_request_id = f"{int(time.time() * 1000)}"
+        # Only generate new request_id if not already set by router
+        if not self.current_request_id:
+            self.current_request_id = f"{int(time.time() * 1000)}"
 
     @thread_safe
     def on_lookup_finished(self, num_hit_tokens: int):
