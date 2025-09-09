@@ -217,3 +217,4 @@ class MonitoredNixlConnectorV2(NixlConnectorV2):
             # End monitoring even if transfer fails
             self._monitor.end_transfer(transfer_id)
             raise e
+
