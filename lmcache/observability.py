@@ -152,6 +152,7 @@ class LMCStatsMonitor:
         self.auto_csv_export = True
         self.csv_output_file = "/home/w00917303/vllm_lmcache_auto.csv"
         self.request_counter = 0
+        self.prefill_only_export = True  # Only export prefill phase data
         
         # Processing time tracking
         self.current_request_start_time = None
@@ -181,7 +182,13 @@ class LMCStatsMonitor:
         
         # Auto export to CSV if enabled
         if self.auto_csv_export:
-            self._auto_export_to_csv()
+            # Check if we should only export prefill phase data
+            if self.prefill_only_export:
+                if self._is_prefill_phase():
+                    self._auto_export_to_csv()
+            else:
+                # Export all phases
+                self._auto_export_to_csv()
 
     @thread_safe
     def on_retrieve_request(self, num_tokens: int) -> int:
@@ -614,6 +621,35 @@ class LMCStatsMonitor:
     def set_request_id(self, request_id: str):
         """Set the current request ID for correlation with vLLM router"""
         self.current_request_id = request_id
+    
+    @thread_safe
+    def set_prefill_only_mode(self, prefill_only: bool):
+        """Set whether to only export prefill phase data"""
+        self.prefill_only_export = prefill_only
+    
+    def _is_prefill_phase(self):
+        """Check if current request is in prefill phase"""
+        # Prefill phase characteristics:
+        # 1. Has lookup_tokens (processing input prompt)
+        # 2. Has store_requests (storing KV cache for first time)
+        # 3. Typically has more lookup_tokens than hit_tokens
+        
+        # Check if we have lookup activity (processing input)
+        if self.interval_lookup_tokens > 0:
+            return True
+        
+        # Check if we have store activity (storing new KV cache)
+        if self.interval_store_requests > 0:
+            return True
+        
+        # Check if we have retrieve activity with significant token count
+        # (prefill typically processes many tokens at once)
+        if self.interval_retrieve_requests > 0 and self.interval_requested_tokens > 10:
+            return True
+            
+        # If no clear indicators, assume it's prefill for now
+        # This can be refined based on actual usage patterns
+        return True
 
     @staticmethod
     def DestroyInstance():
