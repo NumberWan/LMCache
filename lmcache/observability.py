@@ -198,27 +198,38 @@ class LMCStatsMonitor:
         # Auto export to CSV if enabled
         print(f"DEBUG: auto_csv_export is {self.auto_csv_export}")
         if self.auto_csv_export:
-            # Always export for debugging purposes
-            print(f"DEBUG: on_lookup_finished - interval_lookup_requests: {self.interval_lookup_requests}, num_hit_tokens: {num_hit_tokens}, client_read_requests: {self.client_read_requests}, local_cache_usage_bytes: {self.local_cache_usage_bytes}")
+            # Check for meaningful cache activity
+            has_cache_activity = (
+                num_hit_tokens > 0 or  # Cache hits
+                self.client_read_requests > 0 or  # P2P transfers
+                self.local_cache_usage_bytes > 0  # Local cache has data
+            )
             
-            # Always export CSV for debugging
-            print(f"DEBUG: Always exporting CSV for debugging")
+            print(f"DEBUG: on_lookup_finished - num_hit_tokens: {num_hit_tokens}, client_read_requests: {self.client_read_requests}, local_cache_usage_bytes: {self.local_cache_usage_bytes}")
+            print(f"DEBUG: has_cache_activity: {has_cache_activity}")
             
-            # Check if we have request_id from router
-            if not self.current_request_id:
-                print(f"DEBUG: No request_id from router yet, marking for pending export")
-                self._pending_export = True
-                return
+            if has_cache_activity:
+                print(f"DEBUG: Cache activity detected, proceeding with CSV export")
+                
+                # Check if we have request_id from router
+                if not self.current_request_id:
+                    print(f"DEBUG: No request_id from router yet, marking for pending export")
+                    self._pending_export = True
+                    return
                 
                 # Check if we should only export prefill phase data
                 if self.prefill_only_export:
                     is_prefill = self._is_prefill_phase()
                     print(f"DEBUG: prefill_only_export=True, is_prefill_phase: {is_prefill}")
                     if is_prefill:
+                        print(f"DEBUG: Calling _auto_export_to_csv (prefill only)")
                         self._auto_export_to_csv()
+                    else:
+                        print(f"DEBUG: Skipping CSV export (not prefill phase)")
                 else:
                     # Export all phases
                     print(f"DEBUG: Exporting CSV (all phases)")
+                    print(f"DEBUG: Calling _auto_export_to_csv (all phases)")
                     self._auto_export_to_csv()
             else:
                 print(f"DEBUG: No cache activity, skipping CSV export")
@@ -555,6 +566,7 @@ class LMCStatsMonitor:
     
     def _auto_export_to_csv(self):
         """Auto export current stats to CSV (internal method)"""
+        print(f"DEBUG: _auto_export_to_csv called")
         try:
             # Calculate processing time
             processing_time = 0.0
@@ -602,20 +614,27 @@ class LMCStatsMonitor:
             # Write to CSV
             import csv
             import os
+            print(f"DEBUG: Writing to CSV file: {self.csv_output_file}")
             file_exists = os.path.exists(self.csv_output_file)
+            print(f"DEBUG: File exists: {file_exists}")
             with open(self.csv_output_file, 'a', newline='') as csvfile:
                 fieldnames = current_stats.keys()
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 
                 # Write header if file is new
                 if not file_exists:
+                    print(f"DEBUG: Writing CSV header")
                     writer.writeheader()
                 
+                print(f"DEBUG: Writing CSV row with request_id: {request_id}")
                 writer.writerow(current_stats)
+                print(f"DEBUG: CSV row written successfully")
                 
         except Exception as e:
-            # Silently handle errors to avoid disrupting LMCache operations
-            pass
+            # Log errors for debugging
+            print(f"DEBUG: Error in _auto_export_to_csv: {e}")
+            import traceback
+            print(f"DEBUG: Traceback: {traceback.format_exc()}")
     
     def _get_current_timestamp(self):
         """Get current timestamp"""
