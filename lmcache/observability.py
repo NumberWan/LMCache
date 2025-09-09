@@ -157,6 +157,11 @@ class LMCStatsMonitor:
         # Processing time tracking
         self.current_request_start_time = None
         self.current_request_id = None
+        
+        # P2P transfer time tracking
+        self.p2p_transfer_start_time = None
+        self.p2p_transfer_end_time = None
+        self.p2p_transfer_duration = 0.0
 
     @thread_safe
     def on_lookup_request(self, num_tokens: int):
@@ -538,6 +543,7 @@ class LMCStatsMonitor:
                 'request_id': request_id,
                 'instance_id': self._get_instance_id(),
                 'processing_time_ms': round(processing_time * 1000, 3),
+                'p2p_transfer_time_ms': round(self.p2p_transfer_duration * 1000, 3),
                 'retrieve_requests': self.interval_retrieve_requests,
                 'store_requests': self.interval_store_requests,
                 'lookup_requests': self.interval_lookup_requests,
@@ -616,6 +622,11 @@ class LMCStatsMonitor:
         # Reset request tracking
         self.current_request_start_time = None
         self.current_request_id = None
+        
+        # Reset P2P transfer tracking
+        self.p2p_transfer_start_time = None
+        self.p2p_transfer_end_time = None
+        self.p2p_transfer_duration = 0.0
     
     @thread_safe
     def set_request_id(self, request_id: str):
@@ -626,6 +637,20 @@ class LMCStatsMonitor:
     def set_prefill_only_mode(self, prefill_only: bool):
         """Set whether to only export prefill phase data"""
         self.prefill_only_export = prefill_only
+    
+    @thread_safe
+    def on_p2p_transfer_start(self):
+        """Record the start of P2P transfer"""
+        import time
+        self.p2p_transfer_start_time = time.time()
+    
+    @thread_safe
+    def on_p2p_transfer_end(self):
+        """Record the end of P2P transfer"""
+        import time
+        if self.p2p_transfer_start_time:
+            self.p2p_transfer_end_time = time.time()
+            self.p2p_transfer_duration = self.p2p_transfer_end_time - self.p2p_transfer_start_time
     
     def _is_prefill_phase(self):
         """Check if current request is in prefill phase"""

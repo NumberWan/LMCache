@@ -79,6 +79,7 @@ class NaiveDistributedServer(DistributedServerInterface):
             stats_monitor = LMCStatsMonitor.GetOrCreate()
             obj_size = memory_obj.get_size()
             stats_monitor.update_interval_remote_read_metrics(obj_size)
+            stats_monitor.on_p2p_transfer_end()  # Record end of P2P transfer
             logger.debug(f"P2P GET: {obj_size / 1e6:.3f} MB from peer")
         
         return memory_obj

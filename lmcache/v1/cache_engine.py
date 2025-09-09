@@ -432,6 +432,9 @@ class LMCacheEngine:
                     # TODO(Jiayi): Need to refactor P2P as a storage backend to
                     # clean up the following code.
                     if self.enable_p2p:
+                        # Record start of P2P transfer
+                        self.stats_monitor.on_p2p_transfer_start()
+                        
                         future_memory_obj = asyncio.run_coroutine_threadsafe(
                             self.distributed_server.issue_get(key),
                             self.distributed_loop,
