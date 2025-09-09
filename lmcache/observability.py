@@ -152,7 +152,7 @@ class LMCStatsMonitor:
         self.auto_csv_export = True
         self.csv_output_file = "/home/w00917303/vllm_lmcache_auto.csv"
         self.request_counter = 0
-        self.prefill_only_export = True  # Only export prefill phase data
+        self.prefill_only_export = False  # Export all phases for debugging
         
         # Processing time tracking
         self.current_request_start_time = None
@@ -203,14 +203,21 @@ class LMCStatsMonitor:
                 self.local_cache_usage_bytes > 0  # Local cache has data
             )
             
+            print(f"DEBUG: on_lookup_finished - num_hit_tokens: {num_hit_tokens}, client_read_requests: {self.client_read_requests}, local_cache_usage_bytes: {self.local_cache_usage_bytes}, has_cache_activity: {has_cache_activity}")
+            
             if has_cache_activity:
                 # Check if we should only export prefill phase data
                 if self.prefill_only_export:
-                    if self._is_prefill_phase():
+                    is_prefill = self._is_prefill_phase()
+                    print(f"DEBUG: prefill_only_export=True, is_prefill_phase: {is_prefill}")
+                    if is_prefill:
                         self._auto_export_to_csv()
                 else:
                     # Export all phases
+                    print(f"DEBUG: Exporting CSV (all phases)")
                     self._auto_export_to_csv()
+            else:
+                print(f"DEBUG: No cache activity, skipping CSV export")
 
     @thread_safe
     def on_retrieve_request(self, num_tokens: int) -> int:
