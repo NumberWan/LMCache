@@ -510,7 +510,7 @@ class LMCStatsMonitor:
             self.request_counter += 1
             request_id = f"auto_request_{self.request_counter}"
             
-            # Get current stats without clearing
+            # Get current stats and clear them for next request
             current_stats = {
                 'timestamp': self._get_current_timestamp(),
                 'request_id': request_id,
@@ -519,7 +519,7 @@ class LMCStatsMonitor:
                 'store_requests': self.interval_store_requests,
                 'lookup_requests': self.interval_lookup_requests,
                 'requested_tokens': self.interval_requested_tokens,
-                'hit_tokens': self.interval_hit_tokens,
+                'hit_tokens': self._convert_tensor_to_int(self.interval_hit_tokens),
                 'lookup_tokens': self.interval_lookup_tokens,
                 'lookup_hits': self.interval_lookup_hits,
                 'remote_read_requests': self.interval_remote_read_requests,
@@ -533,6 +533,9 @@ class LMCStatsMonitor:
                 'remote_cache_usage_bytes': self.remote_cache_usage_bytes,
                 'local_storage_usage_bytes': self.local_storage_usage_bytes,
             }
+            
+            # Clear interval stats after export to get per-request data
+            self._clear_interval_stats()
             
             # Write to CSV
             import csv
@@ -561,6 +564,29 @@ class LMCStatsMonitor:
         """Get instance ID from environment or default"""
         import os
         return os.environ.get('LMCACHE_INSTANCE_ID', 'vllm_auto')
+    
+    def _convert_tensor_to_int(self, value):
+        """Convert tensor to int if needed"""
+        if hasattr(value, 'item'):
+            return value.item()
+        return int(value) if value is not None else 0
+    
+    def _clear_interval_stats(self):
+        """Clear interval stats for next request"""
+        self.interval_retrieve_requests = 0
+        self.interval_store_requests = 0
+        self.interval_lookup_requests = 0
+        self.interval_requested_tokens = 0
+        self.interval_hit_tokens = 0
+        self.interval_lookup_tokens = 0
+        self.interval_lookup_hits = 0
+        self.interval_remote_read_requests = 0
+        self.interval_remote_read_bytes = 0
+        self.interval_remote_write_requests = 0
+        self.interval_remote_write_bytes = 0
+        self.interval_remote_ping_latency = 0
+        self.interval_remote_ping_errors = 0
+        self.interval_remote_ping_success = 0
 
     @staticmethod
     def DestroyInstance():
