@@ -548,6 +548,8 @@ class LMCStatsMonitor:
                 'local_cache_usage_bytes': self.local_cache_usage_bytes,
                 'remote_cache_usage_bytes': self.remote_cache_usage_bytes,
                 'local_storage_usage_bytes': self.local_storage_usage_bytes,
+                'cache_status': 'active' if self.local_cache_usage_bytes > 0 else 'empty',
+                'cache_usage_mb': round(self.local_cache_usage_bytes / (1024 * 1024), 2),
             }
             
             # Clear interval stats after export to get per-request data
