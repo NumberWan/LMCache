@@ -206,6 +206,12 @@ class LMCStatsMonitor:
             print(f"DEBUG: on_lookup_finished - num_hit_tokens: {num_hit_tokens}, client_read_requests: {self.client_read_requests}, local_cache_usage_bytes: {self.local_cache_usage_bytes}, has_cache_activity: {has_cache_activity}")
             
             if has_cache_activity:
+                # Check if we have request_id from router
+                if not self.current_request_id:
+                    print(f"DEBUG: No request_id from router yet, marking for pending export")
+                    self._pending_export = True
+                    return
+                
                 # Check if we should only export prefill phase data
                 if self.prefill_only_export:
                     is_prefill = self._is_prefill_phase()
@@ -663,6 +669,12 @@ class LMCStatsMonitor:
     def set_request_id(self, request_id: str):
         """Set the current request ID for correlation with vLLM router"""
         self.current_request_id = request_id
+        print(f"DEBUG: LMCache set_request_id called with: {request_id}")
+        # If there's pending export, trigger it now
+        if hasattr(self, '_pending_export') and self._pending_export:
+            print(f"DEBUG: Triggering pending CSV export with request_id: {request_id}")
+            self._auto_export_to_csv()
+            self._pending_export = False
     
     @thread_safe
     def set_prefill_only_mode(self, prefill_only: bool):
