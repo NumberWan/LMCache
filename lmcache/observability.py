@@ -391,6 +391,55 @@ class LMCStatsMonitor:
         if LMCStatsMonitor._instance is None:
             LMCStatsMonitor._instance = LMCStatsMonitor()
         return LMCStatsMonitor._instance
+    
+    def export_to_csv(self, filename: str, request_id: str = None, instance_id: str = None):
+        """
+        Export current statistics to CSV file
+        
+        Args:
+            filename: CSV file path
+            request_id: Optional request ID for correlation
+            instance_id: Optional instance ID for identification
+        """
+        import csv
+        import os
+        from datetime import datetime
+        
+        # Prepare data
+        data = {
+            'timestamp': datetime.now().isoformat(),
+            'request_id': request_id or '',
+            'instance_id': instance_id or '',
+            'interval_retrieve_requests': self.interval_retrieve_requests,
+            'interval_store_requests': self.interval_store_requests,
+            'interval_lookup_requests': self.interval_lookup_requests,
+            'interval_requested_tokens': self.interval_requested_tokens,
+            'interval_hit_tokens': self.interval_hit_tokens,
+            'interval_lookup_tokens': self.interval_lookup_tokens,
+            'interval_lookup_hits': self.interval_lookup_hits,
+            'interval_remote_read_requests': self.interval_remote_read_requests,
+            'interval_remote_read_bytes': self.interval_remote_read_bytes,
+            'interval_remote_write_requests': self.interval_remote_write_requests,
+            'interval_remote_write_bytes': self.interval_remote_write_bytes,
+            'interval_remote_ping_latency': self.interval_remote_ping_latency,
+            'interval_remote_ping_errors': self.interval_remote_ping_errors,
+            'interval_remote_ping_success': self.interval_remote_ping_success,
+            'local_cache_usage_bytes': self.local_cache_usage_bytes,
+            'remote_cache_usage_bytes': self.remote_cache_usage_bytes,
+            'local_storage_usage_bytes': self.local_storage_usage_bytes,
+        }
+        
+        # Write to CSV
+        file_exists = os.path.exists(filename)
+        with open(filename, 'a', newline='') as csvfile:
+            fieldnames = data.keys()
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Write header if file is new
+            if not file_exists:
+                writer.writeheader()
+            
+            writer.writerow(data)
 
     @staticmethod
     def DestroyInstance():
