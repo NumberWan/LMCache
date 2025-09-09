@@ -191,15 +191,26 @@ class LMCStatsMonitor:
         """
         self.interval_lookup_hits += num_hit_tokens
         
-        # Auto export to CSV if enabled
+        # Auto export to CSV if enabled and there's actual cache activity
         if self.auto_csv_export:
-            # Check if we should only export prefill phase data
-            if self.prefill_only_export:
-                if self._is_prefill_phase():
+            # Only export if there's meaningful cache activity:
+            # - Has lookup hits (cache was actually used)
+            # - Has P2P transfers (remote cache activity)
+            # - Has local cache usage (cache is not empty)
+            has_cache_activity = (
+                num_hit_tokens > 0 or  # Cache hits
+                self.client_read_requests > 0 or  # P2P transfers
+                self.local_cache_usage_bytes > 0  # Local cache has data
+            )
+            
+            if has_cache_activity:
+                # Check if we should only export prefill phase data
+                if self.prefill_only_export:
+                    if self._is_prefill_phase():
+                        self._auto_export_to_csv()
+                else:
+                    # Export all phases
                     self._auto_export_to_csv()
-            else:
-                # Export all phases
-                self._auto_export_to_csv()
 
     @thread_safe
     def on_retrieve_request(self, num_tokens: int) -> int:
@@ -566,7 +577,6 @@ class LMCStatsMonitor:
                 'local_cache_usage_bytes': self.local_cache_usage_bytes,
                 'remote_cache_usage_bytes': self.remote_cache_usage_bytes,
                 'local_storage_usage_bytes': self.local_storage_usage_bytes,
-                'cache_status': 'active' if self.local_cache_usage_bytes > 0 else 'empty',
                 'cache_usage_mb': round(self.local_cache_usage_bytes / (1024 * 1024), 2),
             }
             
