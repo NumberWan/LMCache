@@ -66,8 +66,8 @@ def main():
     parser.add_argument(
         "--output", "-o",
         type=str,
-        default="lmcache_stats.csv",
-        help="Output CSV file path (default: lmcache_stats.csv)"
+        default="/home/w00917303/vllm_lmcache.csv",
+        help="Output CSV file path (default: /home/w00917303/vllm_lmcache.csv)"
     )
     parser.add_argument(
         "--interval", "-i",
