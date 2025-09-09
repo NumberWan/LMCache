@@ -166,6 +166,9 @@ class LMCStatsMonitor:
         # Client-side P2P read metrics (I pull from others)
         self.client_read_requests = 0
         self.client_read_bytes = 0
+        
+        # Pending export flag for request_id alignment
+        self._pending_export = False
 
     @thread_safe
     def on_lookup_request(self, num_tokens: int):
