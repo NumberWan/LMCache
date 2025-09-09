@@ -12,6 +12,7 @@ import torch
 
 # First Party
 from lmcache.logging import init_logger
+from lmcache.observability import LMCStatsMonitor
 from lmcache.utils import CacheEngineKey
 from lmcache.v1.config import LMCacheEngineConfig
 from lmcache.v1.distributed_server.abstract_server import (  # noqa: E501
@@ -72,6 +73,14 @@ class NaiveDistributedServer(DistributedServerInterface):
         This function is blocking for now but should be non-blocking.
         """
         memory_obj = self.storage_manager.get(key)
+        
+        # Record P2P transfer statistics
+        if memory_obj is not None:
+            stats_monitor = LMCStatsMonitor.GetOrCreate()
+            obj_size = memory_obj.get_size()
+            stats_monitor.update_interval_remote_read_metrics(obj_size)
+            logger.debug(f"P2P GET: {obj_size / 1e6:.3f} MB from peer")
+        
         return memory_obj
 
     async def receive_mem_obj(
@@ -141,6 +150,12 @@ class NaiveDistributedServer(DistributedServerInterface):
             return False
 
         self.storage_manager.put(meta.key, mem_obj, meta.location)
+
+        # Record P2P transfer statistics
+        stats_monitor = LMCStatsMonitor.GetOrCreate()
+        obj_size = mem_obj.get_size()
+        stats_monitor.update_interval_remote_write_metrics(obj_size)
+        logger.debug(f"P2P PUT: {obj_size / 1e6:.3f} MB to peer")
 
         t2 = time.perf_counter()
 
