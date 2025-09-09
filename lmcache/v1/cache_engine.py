@@ -434,6 +434,7 @@ class LMCacheEngine:
                     if self.enable_p2p:
                         # Record start of P2P transfer
                         self.stats_monitor.on_p2p_transfer_start()
+                        logger.debug(f"P2P lookup for key: {key}")
                         
                         future_memory_obj = asyncio.run_coroutine_threadsafe(
                             self.distributed_server.issue_get(key),
@@ -441,9 +442,11 @@ class LMCacheEngine:
                         )
                         memory_obj = future_memory_obj.result()
                         if memory_obj:
+                            logger.debug(f"P2P transfer successful for key: {key}")
                             reordered_chunks.append((key, memory_obj, start, end))
                             ret_mask[start:end] = True
                         else:
+                            logger.debug(f"P2P transfer failed for key: {key}")
                             # NOTE: break for P2P retrieve KV because of no required
                             # memory obj
                             break
