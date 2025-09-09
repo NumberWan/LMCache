@@ -444,6 +444,11 @@ class LMCacheEngine:
                         if memory_obj:
                             # Accumulate client-observed transfer duration for this request
                             self.stats_monitor.add_p2p_transfer_duration_ms((t_end_ms - t_start_ms) * 1000.0)
+                            # Accumulate client-side read metrics
+                            try:
+                                self.stats_monitor.add_client_read_metrics(memory_obj.get_size())
+                            except Exception:
+                                pass
                             logger.debug(f"P2P transfer successful for key: {key}")
                             reordered_chunks.append((key, memory_obj, start, end))
                             ret_mask[start:end] = True

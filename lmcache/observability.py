@@ -163,6 +163,10 @@ class LMCStatsMonitor:
         self.p2p_transfer_end_time = None
         self.p2p_transfer_duration = 0.0
 
+        # Client-side P2P read metrics (I pull from others)
+        self.client_read_requests = 0
+        self.client_read_bytes = 0
+
     @thread_safe
     def on_lookup_request(self, num_tokens: int):
         """
@@ -544,6 +548,8 @@ class LMCStatsMonitor:
                 'instance_id': self._get_instance_id(),
                 'processing_time_ms': round(processing_time * 1000, 3),
                 'p2p_transfer_time_ms': round(self.p2p_transfer_duration * 1000, 3),
+                'client_read_requests': self.client_read_requests,
+                'client_read_bytes': self.client_read_bytes,
                 'retrieve_requests': self.interval_retrieve_requests,
                 'store_requests': self.interval_store_requests,
                 'lookup_requests': self.interval_lookup_requests,
@@ -551,10 +557,7 @@ class LMCStatsMonitor:
                 'hit_tokens': self._convert_tensor_to_int(self.interval_hit_tokens),
                 'lookup_tokens': self.interval_lookup_tokens,
                 'lookup_hits': self.interval_lookup_hits,
-                'remote_read_requests': self.interval_remote_read_requests,
-                'remote_read_bytes': self.interval_remote_read_bytes,
-                'remote_write_requests': self.interval_remote_write_requests,
-                'remote_write_bytes': self.interval_remote_write_bytes,
+                # server-side metrics removed from CSV to avoid confusion
                 'remote_ping_latency': self.interval_remote_ping_latency,
                 'remote_ping_errors': self.interval_remote_ping_errors,
                 'remote_ping_success': self.interval_remote_ping_success,
@@ -627,6 +630,10 @@ class LMCStatsMonitor:
         self.p2p_transfer_start_time = None
         self.p2p_transfer_end_time = None
         self.p2p_transfer_duration = 0.0
+
+        # Reset client-side read metrics
+        self.client_read_requests = 0
+        self.client_read_bytes = 0
     
     @thread_safe
     def set_request_id(self, request_id: str):
@@ -662,6 +669,17 @@ class LMCStatsMonitor:
                 return
             # Store in seconds internally
             self.p2p_transfer_duration += (delta_ms / 1000.0)
+        except Exception:
+            pass
+
+    @thread_safe
+    def add_client_read_metrics(self, read_bytes: int):
+        """Accumulate client-side P2P read metrics (I pull from others)."""
+        try:
+            if read_bytes is None or read_bytes < 0:
+                return
+            self.client_read_requests += 1
+            self.client_read_bytes += int(read_bytes)
         except Exception:
             pass
     
