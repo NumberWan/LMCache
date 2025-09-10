@@ -1,17 +1,4 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import Optional
 import asyncio
@@ -34,8 +21,10 @@ from lmcache.v1.cache_controller.message import (  # isort: skip
     CheckFinishMsg,
     ClearMsg,
     CompressMsg,
+    DecompressMsg,
     DeRegisterMsg,
     HealthMsg,
+    HeartbeatMsg,
     KVAdmitMsg,
     KVEvictMsg,
     LookupMsg,
@@ -104,7 +93,9 @@ class LMCacheControllerManager:
         # asyncio.run_coroutine_threadsafe(self.start_all(), self.loop)
 
     async def handle_worker_message(self, msg: WorkerMsg) -> None:
-        if isinstance(msg, RegisterMsg):
+        if isinstance(msg, HeartbeatMsg):
+            await self.reg_controller.heartbeat(msg)
+        elif isinstance(msg, RegisterMsg):
             await self.reg_controller.register(msg)
         elif isinstance(msg, DeRegisterMsg):
             await self.reg_controller.deregister(msg)
@@ -115,7 +106,7 @@ class LMCacheControllerManager:
         else:
             logger.error(f"Unknown worker message type: {msg}")
 
-    async def handle_orchestration_message(self, msg: OrchMsg) -> Optional[OrchRetMsg]:
+    async def handle_orchestration_message(self, msg: OrchMsg) -> OrchRetMsg:
         if isinstance(msg, LookupMsg):
             return await self.kv_controller.lookup(msg)
         elif isinstance(msg, FullLookupMsg):
@@ -130,6 +121,8 @@ class LMCacheControllerManager:
             return await self.kv_controller.pin(msg)
         elif isinstance(msg, CompressMsg):
             return await self.kv_controller.compress(msg)
+        elif isinstance(msg, DecompressMsg):
+            return await self.kv_controller.decompress(msg)
         elif isinstance(msg, MoveMsg):
             return await self.kv_controller.move(msg)
         elif isinstance(msg, CheckFinishMsg):
@@ -137,8 +130,8 @@ class LMCacheControllerManager:
             # shouldn't be implemented in kv_controller.
             return await self.kv_controller.check_finish(msg)
         else:
-            logger.error(f"Unknown ochestration message type: {msg}")
-            return None
+            logger.error(f"Unknown orchestration message type: {msg}")
+            raise RuntimeError(f"Unknown orchestration message type: {msg}")
 
     async def handle_batched_request(self, socket) -> Optional[MsgBase]:
         while True:
@@ -171,5 +164,4 @@ class LMCacheControllerManager:
     async def start_all(self):
         await asyncio.gather(
             self.handle_batched_request(self.controller_socket),
-            # self.handle_batched_request(other socket),
         )

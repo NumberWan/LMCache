@@ -1,22 +1,10 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import TYPE_CHECKING, Union
 import os
 
 if TYPE_CHECKING:
+    from vllm.config import ModelConfig
     from vllm.multimodal.inputs import PlaceholderRange
 
 # Third Party
@@ -99,6 +87,14 @@ def apply_mm_hashes_to_token_ids(
     return token_ids
 
 
+def mla_enabled(model_config: "ModelConfig") -> bool:
+    return (
+        hasattr(model_config, "use_mla")
+        and isinstance(model_config.use_mla, bool)
+        and model_config.use_mla
+    )
+
+
 def create_lmcache_metadata(
     vllm_config=None, model_config=None, parallel_config=None, cache_config=None
 ):
@@ -139,13 +135,7 @@ def create_lmcache_metadata(
     kv_dtype = get_kv_cache_torch_dtype(cache_cfg.cache_dtype, model_cfg.dtype)
 
     # Check if MLA is enabled
-    use_mla = False
-    if (
-        hasattr(model_cfg, "use_mla")
-        and isinstance(model_cfg.use_mla, bool)
-        and model_cfg.use_mla
-    ):
-        use_mla = True
+    use_mla = mla_enabled(model_cfg)
 
     # Construct KV shape (for memory pool)
     num_layer = model_cfg.get_num_layers(parallel_cfg)

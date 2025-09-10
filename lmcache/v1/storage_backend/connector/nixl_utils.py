@@ -1,20 +1,7 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from dataclasses import dataclass
-from typing import Union
+from typing import Optional, Union
 import enum
 
 # First Party
@@ -57,7 +44,8 @@ class NixlConfig:
     receiver_port: int
     buffer_size: int
     buffer_device: str
-    enable_gc: bool
+    enable_gc: bool = True
+    backends: Optional[list[str]] = None
 
     @staticmethod
     def from_cache_engine_config(
@@ -97,4 +85,71 @@ class NixlConfig:
             buffer_size=config.nixl_buffer_size,
             buffer_device=corrected_device,
             enable_gc=config.nixl_enable_gc,
+            backends=config.nixl_backends,
+        )
+
+
+@dataclass
+class NixlConfigXpYd:
+    role: Union[NixlRole, str]
+
+    peer_host: str
+    peer_init_port: list[int]
+    peer_alloc_port: list[int]
+
+    proxy_host: str
+    proxy_port: int
+
+    buffer_size: int
+    buffer_device: str
+
+    backends: Optional[list[str]]
+
+    @staticmethod
+    def from_cache_engine_config(
+        config: LMCacheEngineConfig, metadata: LMCacheEngineMetadata
+    ) -> "NixlConfigXpYd":
+        """Convert the LMCacheEngineConfig to NixlConfigXpYd"""
+        # TODO (Jiayi): add (heterogeneous) TP support
+        # worker_id = metadata.worker_id
+        # assert config.enable_nixl is True, (
+        #     "NIXL is not enabled in the LMCacheEngineConfig"
+        # )
+
+        if isinstance(config.nixl_role, str):
+            nixl_role = NixlRole(config.nixl_role)
+        else:
+            assert isinstance(config.nixl_role, NixlRole)
+            nixl_role = config.nixl_role
+
+        assert nixl_role in [NixlRole.SENDER, NixlRole.RECEIVER], (
+            f"Invalid role: {config.nixl_role}, must be either "
+            f"{NixlRole.SENDER} or {NixlRole.RECEIVER}"
+        )
+
+        assert config.nixl_buffer_size is not None
+        assert config.nixl_buffer_device is not None
+
+        if nixl_role == NixlRole.RECEIVER:
+            assert config.nixl_peer_host is not None
+            assert config.nixl_peer_init_port is not None
+            assert config.nixl_peer_alloc_port is not None
+        elif nixl_role == NixlRole.SENDER:
+            assert config.nixl_proxy_host is not None
+            assert config.nixl_proxy_port is not None
+
+        corrected_device = get_correct_nixl_device(
+            config.nixl_buffer_device, metadata.worker_id
+        )
+
+        return NixlConfigXpYd(
+            role=nixl_role,
+            peer_host=config.nixl_peer_host,
+            peer_init_port=config.nixl_peer_init_port,
+            peer_alloc_port=config.nixl_peer_alloc_port,
+            proxy_host=config.nixl_proxy_host,
+            proxy_port=config.nixl_proxy_port,
+            buffer_size=config.nixl_buffer_size,
+            backends=config.nixl_backends,
+            buffer_device=corrected_device,
         )

@@ -1,17 +1,4 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import TYPE_CHECKING
 import asyncio
@@ -27,9 +14,20 @@ from lmcache.logging import init_logger
 from lmcache.v1.cache_controller.message import (
     ClearWorkerMsg,
     ClearWorkerRetMsg,
+    CompressWorkerMsg,
+    CompressWorkerRetMsg,
+    DecompressWorkerMsg,
+    DecompressWorkerRetMsg,
     DeRegisterMsg,
     ErrorMsg,
+    HealthWorkerMsg,
+    HealthWorkerRetMsg,
+    HeartbeatMsg,
+    MoveWorkerMsg,
+    MoveWorkerRetMsg,
     Msg,
+    PinWorkerMsg,
+    PinWorkerRetMsg,
     RegisterMsg,
     WorkerMsg,
 )
@@ -64,6 +62,7 @@ class LMCacheWorker:
     ):
         # TODO (Jiayi): "instance_id" might not be needed anymore.
         # Please consider removing it.
+        self.config = config
         self.lmcache_instance_id = config.lmcache_instance_id
         assert self.lmcache_instance_id is not None
         self.lmcache_engine = lmcache_engine
@@ -91,6 +90,8 @@ class LMCacheWorker:
         self.lmcache_worker_ip = get_ip()
         self.lmcache_worker_port = lmcache_worker_port
 
+        self.distributed_url = config.distributed_url
+
         self.reply_socket = get_zmq_socket(
             self.context,
             self.lmcache_worker_internal_url,
@@ -98,6 +99,8 @@ class LMCacheWorker:
             role=zmq.REP,  # type: ignore[attr-defined]
             bind_or_connect="bind",
         )
+
+        logger.info(f"Reply socket established at {self.lmcache_worker_internal_url}")
 
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
@@ -123,6 +126,7 @@ class LMCacheWorker:
                 worker_id=self.worker_id,
                 ip=self.lmcache_worker_ip,
                 port=self.lmcache_worker_port,
+                distributed_url=self.distributed_url,
             )
         )
 
@@ -167,6 +171,30 @@ class LMCacheWorker:
                 break
         return batch
 
+    async def heartbeat(self):
+        enable_heartbeat = (
+            self.config.lmcache_worker_heartbeat_time is not None
+            and self.config.lmcache_worker_heartbeat_time > 0
+        )
+        if enable_heartbeat:
+            logger.info(
+                f"Start heartbeat in {self.lmcache_instance_id} : {self.worker_id}, "
+                f"delay time: {self.config.lmcache_worker_heartbeat_delay_time}s, "
+                f"heartbeat time: {self.config.lmcache_worker_heartbeat_time}s"
+            )
+            await asyncio.sleep(self.config.lmcache_worker_heartbeat_delay_time)
+            while True:
+                self.put_msg(
+                    HeartbeatMsg(
+                        instance_id=self.lmcache_instance_id,
+                        worker_id=self.worker_id,
+                        ip=self.lmcache_worker_ip,
+                        port=self.lmcache_worker_port,
+                        distributed_url=self.distributed_url,
+                    )
+                )
+                await asyncio.sleep(self.config.lmcache_worker_heartbeat_time)
+
     async def push(self):
         while True:
             try:
@@ -188,11 +216,84 @@ class LMCacheWorker:
                 serialized_request = await self.reply_socket.recv()
                 request = msgspec.msgpack.decode(serialized_request, type=Msg)
                 logger.debug(f"Received message: {request}")
-                if isinstance(request, ClearWorkerMsg):
+                if isinstance(request, MoveWorkerMsg):
                     tokens = request.tokens
-                    result = self.lmcache_engine.clear(tokens)
+                    old_position = request.old_position
+                    new_position = request.new_position
+                    do_copy = request.copy
+                    worker_event_id = request.worker_event_id
+
+                    # Intra node move
+                    if new_position[0] == self.lmcache_worker_internal_url:
+                        # TODO(Jiayi): currently we only support moving from
+                        # local disk to local cpu.
+                        assert old_position[1] == "disk"
+                        assert new_position[1] == "cpu"
+                        assert do_copy
+
+                        # TODO(Jiayi): We need to align prefetch and move.
+                        logger.debug("Executing prefetch operation.")
+                        raise NotImplementedError(
+                            "Prefetch from controller is not implemented yet."
+                        )
+                    else:
+                        assert self.lmcache_engine.distributed_server is not None
+                        logger.debug("Executing cross-node move operation.")
+                        num_tokens = self.lmcache_engine.move(
+                            tokens=tokens,
+                            old_position=old_position,
+                            new_position=new_position,
+                            event_id=worker_event_id,
+                            do_copy=do_copy,
+                        )
+
+                    # TODO(Jiayi): LMCache needs to have an event tracking
+                    # pool to enable more advanced control-plane optims.
+                    # For now, we use a dummy `event_id`.
                     serialized_ret_msg = msgspec.msgpack.encode(
-                        ClearWorkerRetMsg(success=result > 0)
+                        MoveWorkerRetMsg(num_tokens=num_tokens)
+                    )
+                elif isinstance(request, CompressWorkerMsg):
+                    num_compressed_tokens = self.lmcache_engine.compress(
+                        tokens=request.tokens,
+                        method=request.method,
+                        location=request.location,
+                        event_id=request.worker_event_id,
+                    )
+                    serialized_ret_msg = msgspec.msgpack.encode(
+                        CompressWorkerRetMsg(num_tokens=num_compressed_tokens)
+                    )
+                elif isinstance(request, DecompressWorkerMsg):
+                    num_decompressed_tokens = self.lmcache_engine.decompress(
+                        tokens=request.tokens,
+                        method=request.method,
+                        location=request.location,
+                        event_id=request.worker_event_id,
+                    )
+                    serialized_ret_msg = msgspec.msgpack.encode(
+                        DecompressWorkerRetMsg(num_tokens=num_decompressed_tokens)
+                    )
+                elif isinstance(request, PinWorkerMsg):
+                    num_pinned_tokens = self.lmcache_engine.lookup(
+                        tokens=request.tokens,
+                        search_range=[request.location],
+                        request_id=request.worker_event_id,
+                        pin=True,
+                    )
+                    serialized_ret_msg = msgspec.msgpack.encode(
+                        PinWorkerRetMsg(num_tokens=num_pinned_tokens)
+                    )
+                elif isinstance(request, ClearWorkerMsg):
+                    num_cleared_tokens = self.lmcache_engine.clear(
+                        locations=[request.location],
+                    )
+                    serialized_ret_msg = msgspec.msgpack.encode(
+                        ClearWorkerRetMsg(num_tokens=num_cleared_tokens)
+                    )
+                elif isinstance(request, HealthWorkerMsg):
+                    error_code = self.lmcache_engine.health()
+                    serialized_ret_msg = msgspec.msgpack.encode(
+                        HealthWorkerRetMsg(error_code=error_code)
                     )
                 else:
                     logger.error(f"Unknown message: {request}")
@@ -217,6 +318,7 @@ class LMCacheWorker:
             await asyncio.gather(
                 self.push(),
                 self.handle_request(),
+                self.heartbeat(),
             )
         except Exception as e:
             logger.error(

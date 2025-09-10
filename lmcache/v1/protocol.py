@@ -1,19 +1,7 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from dataclasses import dataclass
+from enum import IntEnum, auto
 from typing import Optional
 import struct
 
@@ -27,15 +15,17 @@ from lmcache.v1.memory_management import MemoryFormat
 MAX_KEY_LENGTH = 150
 
 
-class Constants:
-    CLIENT_PUT = 1
-    CLIENT_GET = 2
-    CLIENT_EXIST = 3
-    CLIENT_LIST = 4
-    CLIENT_HEALTH = 5
+class ClientCommand(IntEnum):
+    PUT = auto()
+    GET = auto()
+    EXIST = auto()
+    LIST = auto()
+    HEALTH = auto()
 
-    SERVER_SUCCESS = 200
-    SERVER_FAIL = 400
+
+class ServerReturnCode(IntEnum):
+    SUCCESS = 200
+    FAIL = 400
 
 
 DTYPE_TO_INT = {
@@ -62,6 +52,19 @@ INT_TO_DTYPE = {
     6: torch.uint8,
     7: torch.float8_e4m3fn,
     8: torch.float8_e5m2,
+}
+
+# TODO (Jiayi): Add more backends
+LOCATION_TO_INT = {
+    None: 0,
+    "LocalCPUBackend": 1,
+    "LocalDiskBackend": 2,
+}
+
+INT_TO_LOCATION = {
+    0: None,
+    1: "LocalCPUBackend",
+    2: "LocalDiskBackend",
 }
 
 
@@ -118,18 +121,22 @@ class RemoteMetadata:
         )
 
 
+# TODO(Jiayi): Server and client message can be merged into one.
+
+
 @dataclass
 class ClientMetaMessage:
     """
-    Control message from LMCServerConnector to LMCacheServer
+    Request message from LMCache workers or servers.
     """
 
-    command: int
+    command: ClientCommand
     key: CacheEngineKey
     length: int
     fmt: MemoryFormat
     dtype: Optional[torch.dtype]
     shape: torch.Size
+    location: Optional[str] = None
 
     def serialize(self) -> bytes:
         key_str = self.key.to_string()
@@ -142,11 +149,12 @@ class ClientMetaMessage:
         assert len(self.shape) == 4, "Shape dimension should be 4"
 
         packed_bytes = struct.pack(
-            f"iiiiiiii{MAX_KEY_LENGTH}s",
-            self.command,
+            f"iiiiiiiii{MAX_KEY_LENGTH}s",
+            self.command.value,
             self.length,
             int(self.fmt.value),
             DTYPE_TO_INT[self.dtype],
+            LOCATION_TO_INT[self.location],
             self.shape[0],
             self.shape[1],
             self.shape[2],
@@ -157,41 +165,43 @@ class ClientMetaMessage:
 
     @staticmethod
     def deserialize(s: bytes) -> "ClientMetaMessage":
-        command, length, fmt, dtype, shape0, shape1, shape2, shape3, key = (
-            struct.unpack(f"iiiiiiii{MAX_KEY_LENGTH}s", s)
+        command, length, fmt, dtype, location, shape0, shape1, shape2, shape3, key = (
+            struct.unpack(f"iiiiiiiii{MAX_KEY_LENGTH}s", s)
         )
         return ClientMetaMessage(
-            command,
+            ClientCommand(command),
             CacheEngineKey.from_string(key.decode().strip()),
             length,
             MemoryFormat(fmt),
             INT_TO_DTYPE[dtype],
             torch.Size([shape0, shape1, shape2, shape3]),
+            INT_TO_LOCATION[location],
         )
 
     @staticmethod
     def packlength() -> int:
-        # NOTE: 8 is the number of integers
-        return 4 * 8 + MAX_KEY_LENGTH
+        # NOTE: 9 is the number of integers
+        return 4 * 9 + MAX_KEY_LENGTH
 
 
 @dataclass
 class ServerMetaMessage:
     """
-    Control message from LMCacheServer to LMCServerConnector
+    Reply message from LMCache workers or servers.
     """
 
-    code: int
+    code: ServerReturnCode
     length: int
     fmt: MemoryFormat
     dtype: Optional[torch.dtype]
     shape: torch.Size
+    location: Optional[str] = None
 
     def serialize(self) -> bytes:
         assert len(self.shape) == 4, "Shape dimension should be 4"
         packed_bytes = struct.pack(
-            "iiiiiiii",
-            self.code,
+            "iiiiiiiii",
+            self.code.value,
             self.length,
             int(self.fmt.value),
             DTYPE_TO_INT[self.dtype],
@@ -199,22 +209,24 @@ class ServerMetaMessage:
             self.shape[1],
             self.shape[2],
             self.shape[3],
+            LOCATION_TO_INT[self.location],
         )
         return packed_bytes
 
     @staticmethod
     def packlength() -> int:
-        return 4 * 8
+        return 4 * 9
 
     @staticmethod
     def deserialize(s: bytes) -> "ServerMetaMessage":
-        code, length, fmt, dtype, shape0, shape1, shape2, shape3 = struct.unpack(
-            "iiiiiiii", s
+        code, length, fmt, dtype, shape0, shape1, shape2, shape3, location = (
+            struct.unpack("iiiiiiiii", s)
         )
         return ServerMetaMessage(
-            code,
+            ServerReturnCode(code),
             length,
             MemoryFormat(fmt),
             INT_TO_DTYPE[dtype],
             torch.Size([shape0, shape1, shape2, shape3]),
+            INT_TO_LOCATION[location],
         )

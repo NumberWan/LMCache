@@ -1,17 +1,4 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import TYPE_CHECKING, Dict
 
@@ -26,6 +13,7 @@ from lmcache.v1.compute.models.utils import VLLMModelTracker
 if TYPE_CHECKING:
     # First Party
     from lmcache.v1.cache_engine import LMCacheEngine
+    from lmcache.v1.config import LMCacheEngineConfig
     from lmcache.v1.gpu_connector import GPUConnectorInterface
 
 logger = init_logger(__name__)
@@ -40,6 +28,7 @@ class LMCBlenderBuilder:
         instance_id: str,
         cache_engine: "LMCacheEngine",
         gpu_connector: "GPUConnectorInterface",
+        config: "LMCacheEngineConfig",
     ):
         """
         Get or create a blender for the given instance_id.
@@ -52,6 +41,7 @@ class LMCBlenderBuilder:
                 cache_engine=cache_engine,
                 gpu_connector=gpu_connector,
                 vllm_model=vllm_model,
+                config=config,
             )
             cls._blenders[instance_id] = blender
         else:

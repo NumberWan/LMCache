@@ -1,28 +1,14 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Third Party
 from torch import nn
 import torch
 
 # First Party
-from lmcache.v1.compute.attention.flash_attn import LMCFlashAttnBackend
-from lmcache.v1.compute.attention.metadata import LMCFlashAttnMetadata
+from lmcache.v1.compute.attention.utils import infer_attn_backend_from_vllm
 from lmcache.v1.compute.positional_encoding import get_fused_rope
 
-# FIXME(Jiayi): A few things need to be tested/supported:
-# PP, Multimodal
+# TODO(Jiayi): A few things need to be tested/supported:
+# TP, PP, Multimodal
 
 
 class LMCLlamaModel(nn.Module):
@@ -30,6 +16,7 @@ class LMCLlamaModel(nn.Module):
         self,
         vllm_model,
         blender,
+        enable_sparse: bool = False,
     ):
         super().__init__()
         self.vllm_model = vllm_model
@@ -41,7 +28,10 @@ class LMCLlamaModel(nn.Module):
         for i in range(self.num_layers):
             vllm_attn = vllm_model.model.layers[i].self_attn.attn
             self.vllm_attn_layers.append(vllm_attn)
-            self.lmc_attn_layers.append(LMCFlashAttnBackend(vllm_attn))
+
+            self.lmc_attn_layers.append(
+                infer_attn_backend_from_vllm(vllm_attn, enable_sparse)
+            )
 
         # NOTE(Jiayi): better not to pass the blender in init
         # if we want to make this LMCModel more general.
@@ -65,27 +55,20 @@ class LMCLlamaModel(nn.Module):
             dtype=dtype,
         )
 
+    @torch.compile
     def compute_layer(
         self,
         input_ids: torch.Tensor,
     ):
-        hidden_states = self.vllm_model.get_input_embeddings(input_ids.cuda())
+        input_ids = input_ids.cuda()
+        hidden_states = self.vllm_model.get_input_embeddings(input_ids)
         residual = None
 
-        # TODO (Jiayi): reduce the number of calls
         attn_output = None
 
         # TODO(Jiayi): Need to build `attn_metadata` more elegantly.
-        attn_metadata = LMCFlashAttnMetadata(
-            query_start_loc=torch.tensor(
-                [0, input_ids.shape[0]], dtype=torch.int32, device=hidden_states.device
-            ),
-            seq_lens=torch.tensor([input_ids.shape[0]], device=hidden_states.device),
-            cu_seqlens_k=torch.tensor(
-                [0, input_ids.shape[0]], dtype=torch.int32, device=hidden_states.device
-            ),
-            max_query_len=input_ids.shape[0],
-            max_seq_len=input_ids.shape[0],
+        attn_metadata = self.lmc_attn_layers[0].init_attn_metadata(
+            input_ids=input_ids,
         )
 
         for idx, layer in enumerate(

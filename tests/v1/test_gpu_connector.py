@@ -1,14 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
 # Standard
+from contextlib import nullcontext
+from unittest.mock import patch
 import random
+import threading
 
 # Third Party
-from utils import (
-    check_paged_kv_cache_equal,
-    check_paged_kv_cache_equal_with_mla,
-    check_sglang_paged_kv_cache_equal,
-    generate_kv_cache_paged_list_tensors,
-    generate_sglang_kv_cache_paged_list_tensors,
-)
 import pytest
 import torch
 
@@ -22,8 +19,70 @@ from lmcache.v1.gpu_connector import (
 from lmcache.v1.memory_management import (
     GPUMemoryAllocator,
     MemoryFormat,
+    PagedTensorMemoryAllocator,
     PinMemoryAllocator,
+    TensorMemoryAllocator,
 )
+
+# Local
+from .utils import (
+    check_paged_kv_cache_equal,
+    check_paged_kv_cache_equal_with_mla,
+    check_sglang_paged_kv_cache_equal,
+    generate_kv_cache_paged_list_tensors,
+    generate_sglang_kv_cache_paged_list_tensors,
+    recover_gpu_connector_states,
+)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def patch_pin_allocator():
+    def fake_pin_init(self, size: int, use_paging: bool = False, **kwargs):
+        """
+        :param int size: The size of the pinned memory in bytes.
+        """
+
+        # self.buffer = torch.empty(size, dtype=torch.uint8)
+        # ptr = self.buffer.data_ptr()
+        # err = torch.cuda.cudart().cudaHostRegister(ptr, size, 0)
+        # assert err == 0, (
+        #     f"cudaHostRegister failed: {torch.cuda.cudart().cudaGetErrorString(err)}"
+        # )
+        self._unregistered = False
+        self.buffer = torch.empty(size, dtype=torch.uint8, pin_memory=True)
+
+        if use_paging:
+            assert "shape" in kwargs, (
+                "shape must be specified for paged memory allocator"
+            )
+            assert "dtype" in kwargs, (
+                "dtype must be specified for paged memory allocator"
+            )
+            assert "fmt" in kwargs, "fmt must be specified for paged memory allocator"
+            self.allocator = PagedTensorMemoryAllocator(
+                tensor=self.buffer,
+                shape=kwargs["shape"],
+                dtype=kwargs["dtype"],
+                fmt=kwargs["fmt"],
+            )
+        else:
+            self.allocator = TensorMemoryAllocator(self.buffer)
+
+        self.host_mem_lock = threading.Lock() if not use_paging else nullcontext()
+
+    def fake_pin_close(self):
+        if not self._unregistered:
+            torch.cuda.synchronize()
+            # torch.cuda.cudart().cudaHostUnregister(self.buffer.data_ptr())
+            self._unregistered = True
+
+    with (
+        patch(
+            "lmcache.v1.memory_management.PinMemoryAllocator.__init__", fake_pin_init
+        ),
+        patch("lmcache.v1.memory_management.PinMemoryAllocator.close", fake_pin_close),
+    ):
+        yield
 
 
 @pytest.mark.parametrize("use_gpu", [True, False])
@@ -95,6 +154,7 @@ def test_vllm_paged_connector_v2_with_gpu_and_mla(use_gpu, use_mla):
             slot_mapping=slot_mapping,
             offset=0,
         )
+        recover_gpu_connector_states(connector)
         if use_mla:
             assert memory_obj.metadata.fmt == MemoryFormat.KV_MLA_FMT
         else:
@@ -118,6 +178,7 @@ def test_vllm_paged_connector_v2_with_gpu_and_mla(use_gpu, use_mla):
         check_paged_kv_cache_equal(
             gpu_kv_src, gpu_kv_dst, slot_mapping, num_heads, head_size
         )
+    allocator.close()
 
 
 @pytest.mark.parametrize("use_gpu", [True])
@@ -216,6 +277,8 @@ def test_layerwise_vllm_paged_connector_with_gpu(use_gpu):
     check_paged_kv_cache_equal(
         gpu_kv_src, gpu_kv_dst, slot_mapping, num_heads, head_size
     )
+
+    allocator.close()
 
 
 @pytest.mark.parametrize("use_gpu", [True])
@@ -377,6 +440,8 @@ def test_batched_layerwise_vllm_paged_connector_with_gpu(use_gpu):
         head_size,
     )
 
+    allocator.close()
+
 
 @pytest.mark.skip(reason="This test is skipped due to vllm dependency")
 @pytest.mark.parametrize("use_gpu", [True])
@@ -473,6 +538,8 @@ def test_layerwise_vllm_buffer_connector_with_gpu(use_gpu):
         gpu_kv_src, gpu_kv_dst, slot_mapping, num_heads, head_size
     )
 
+    allocator.close()
+
 
 def test_vllm_paged_connector_v2_to_gpu_bench(benchmark):
     """
@@ -512,6 +579,7 @@ def test_vllm_paged_connector_v2_to_gpu_bench(benchmark):
         slot_mapping=slot_mapping,
         offset=0,
     )
+    recover_gpu_connector_states(connector)
     assert memory_obj.metadata.fmt == MemoryFormat.KV_2LTD
     benchmark.pedantic(
         connector.to_gpu,
@@ -527,6 +595,8 @@ def test_vllm_paged_connector_v2_to_gpu_bench(benchmark):
     )
     allocator.free(memory_obj)
     assert allocator.memcheck()
+
+    allocator.close()
 
 
 @pytest.mark.parametrize("use_gpu", [True, False])
@@ -636,3 +706,5 @@ def test_sglang_connector_with_gpu_and_mla(use_gpu, use_mla):
         check_sglang_paged_kv_cache_equal(
             gpu_kv_src, gpu_kv_dst, slot_mapping, num_heads, head_size
         )
+
+    allocator.close()

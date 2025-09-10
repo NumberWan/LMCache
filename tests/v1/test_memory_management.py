@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Third Party
 import pytest
 import torch
@@ -61,6 +62,8 @@ def check_allocator(allocator, max_size):
 
     assert allocator.memcheck()
 
+    allocator.close()
+
 
 def check_paged_allocator(allocator, shape, dtype, fmt, max_num_pages):
     # Allocate one page
@@ -100,6 +103,8 @@ def check_paged_allocator(allocator, shape, dtype, fmt, max_num_pages):
 
     assert allocator.memcheck()
 
+    allocator.close()
+
 
 @pytest.mark.parametrize(
     "use_paging",
@@ -118,6 +123,8 @@ def test_tensor_allocator(use_paging):
     else:
         allocator = TensorMemoryAllocator(tensor_buffer)
         check_allocator(allocator, total_size)
+
+    allocator.close()
 
 
 @pytest.mark.parametrize(
@@ -153,6 +160,8 @@ def test_device_allocators(alloc_cls, use_paging):
     else:
         check_allocator(allocator, total_size)
 
+    allocator.close()
+
 
 @pytest.mark.parametrize(
     "alloc_cls",
@@ -164,19 +173,21 @@ def test_device_allocators(alloc_cls, use_paging):
     ],
 )
 def test_inplace_modification(alloc_cls):
-    total_size = 1024
+    total_size = 1024 * 1024
     allocator = alloc_cls(total_size)
 
-    data = allocator.allocate([10], torch.float)
+    data = allocator.allocate([4096], torch.float)
     assert data is not None
     assert data.tensor.dtype == torch.float
-    assert data.tensor.shape == (10,)
+    assert data.tensor.shape == (4096,)
 
     data.tensor.fill_(1.0)
     assert torch.all(data.tensor == 1.0)
 
     data.tensor[1] = 2.0
     assert data.tensor[1] == 2.0
+
+    allocator.close()
 
 
 @pytest.mark.parametrize(
@@ -202,6 +213,8 @@ def test_boundary_alloc(alloc_cls):
         assert len(allocator.pin_allocator.explicit_list) == 1
     else:
         assert len(allocator.allocator.explicit_list) == 1
+
+    allocator.close()
 
 
 @pytest.mark.parametrize(
@@ -234,6 +247,8 @@ def test_batched_alloc(alloc_cls):
     else:
         assert len(allocator.allocator.explicit_list) == 1
 
+    allocator.close()
+
 
 @pytest.mark.parametrize(
     "alloc_cls",
@@ -253,3 +268,5 @@ def test_mixed_alloc(alloc_cls):
     assert isinstance(data1, BytesBufferMemoryObj)
 
     assert len(data1.byte_array) == 512
+
+    allocator.close()

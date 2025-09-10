@@ -1,17 +1,4 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # First Party
 from lmcache.logging import init_logger
 from lmcache.v1.storage_backend.connector import (
@@ -41,6 +28,11 @@ class AuditConnectorAdapter(ConnectorAdapter):
         """
         Create an Audit connector. This connector wraps another connector
         and audits all operations.
+        
+        extra_config:
+        - audit_actual_remote_url: The actual remote URL to connect to.
+        - audit_calc_checksum: Whether to calculate checksums.
+        - audit_verify_checksum: Whether to verify checksums.
 
         URL format:
         - audit://host:port[?verify=true|false]
@@ -56,15 +48,32 @@ class AuditConnectorAdapter(ConnectorAdapter):
             raise ValueError(
                 f"Only one host is supported for audit connector, but got {hosts}"
             )
-
-        if not context.config or not context.config.audit_actual_remote_url:
-            raise ValueError("audit_actual_remote_url is not set in the config")
+        if not context.config:
+            raise ValueError("Config is not set")
 
         parse_url = parse_remote_url(context.url)
+        # (Deprecated) verify URL parameter will be removed in future versions
+        # Use the extra config instead
         verify_param = parse_url.query_params.get("verify", ["false"])[0]
         verify_checksum = verify_param.lower() in ("true", "1", "yes")
-        real_url = context.config.audit_actual_remote_url
-        connector = CreateConnector(
-            real_url, context.loop, context.local_cpu_backend, context.config
+        # Get the actual remote URL from the extra config first to keep consistency
+        real_url = context.config.extra_config.get(
+            "audit_actual_remote_url", context.config.audit_actual_remote_url
         )
-        return AuditConnector(connector, verify_checksum)
+        if not real_url:
+            raise ValueError(
+                "audit_actual_remote_url is not set in the config or extra_config"
+            )
+        # Store verify_checksum in extra_config if not already set
+        if context.config.extra_config is None:
+            context.config.extra_config = {}
+        if "audit_verify_checksum" not in context.config.extra_config:
+            context.config.extra_config["audit_verify_checksum"] = verify_checksum
+        connector = CreateConnector(
+            real_url,
+            context.loop,
+            context.local_cpu_backend,
+            context.config,
+            context.metadata,
+        )
+        return AuditConnector(connector.getWrappedConnector(), context.config)

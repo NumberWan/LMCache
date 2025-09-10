@@ -1,17 +1,4 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import List, Optional
 import socket
@@ -19,7 +6,12 @@ import threading
 
 # First Party
 from lmcache.logging import init_logger
-from lmcache.protocol import ClientMetaMessage, Constants, ServerMetaMessage
+from lmcache.protocol import (
+    ClientCommand,
+    ClientMetaMessage,
+    ServerMetaMessage,
+    ServerReturnCode,
+)
 from lmcache.storage_backend.connector.base_connector import (
     RemoteBytesConnector,
 )
@@ -58,38 +50,36 @@ class LMCServerConnector(RemoteBytesConnector):
 
     def exists(self, key: str) -> bool:
         logger.debug("Call to exists()!")
-        self.send_all(ClientMetaMessage(Constants.CLIENT_EXIST, key, 0).serialize())
+        self.send_all(ClientMetaMessage(ClientCommand.EXIST, key, 0).serialize())
         response = self.client_socket.recv(ServerMetaMessage.packlength())
-        return ServerMetaMessage.deserialize(response).code == Constants.SERVER_SUCCESS
+        return ServerMetaMessage.deserialize(response).code == ServerReturnCode.SUCCESS
 
     def set(self, key: str, obj: bytes):  # type: ignore[override]
         logger.debug("Call to set()!")
-        self.send_all(
-            ClientMetaMessage(Constants.CLIENT_PUT, key, len(obj)).serialize()
-        )
+        self.send_all(ClientMetaMessage(ClientCommand.PUT, key, len(obj)).serialize())
         self.send_all(obj)
         # response = self.client_socket.recv(ServerMetaMessage.packlength())
         # if ServerMetaMessage.deserialize(response).code
-        #   != Constants.SERVER_SUCCESS:
+        #   != ServerReturnCode.SUCCESS:
         #    raise RuntimeError(f"Failed to set key:
         # {ServerMetaMessage.deserialize(response).code}")
 
     @_lmcache_nvtx_annotate
     def get(self, key: str) -> Optional[bytes]:
-        self.send_all(ClientMetaMessage(Constants.CLIENT_GET, key, 0).serialize())
+        self.send_all(ClientMetaMessage(ClientCommand.GET, key, 0).serialize())
         data = self.client_socket.recv(ServerMetaMessage.packlength())
         meta = ServerMetaMessage.deserialize(data)
-        if meta.code != Constants.SERVER_SUCCESS:
+        if meta.code != ServerReturnCode.SUCCESS:
             return None
         length = meta.length
         data = self.receive_all(length)
         return data if data is None else bytes(data)
 
     def list(self) -> List[str]:
-        self.send_all(ClientMetaMessage(Constants.CLIENT_LIST, "", 0).serialize())
+        self.send_all(ClientMetaMessage(ClientCommand.LIST, "", 0).serialize())
         data = self.client_socket.recv(ServerMetaMessage.packlength())
         meta = ServerMetaMessage.deserialize(data)
-        if meta.code != Constants.SERVER_SUCCESS:
+        if meta.code != ServerReturnCode.SUCCESS:
             logger.error("LMCServerConnector: Cannot list keys from the remote server!")
             return []
         length = meta.length

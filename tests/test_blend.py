@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import List, Tuple
 import random
@@ -461,7 +462,7 @@ def test_spt_multi_query(fmt, autorelease):
 
     retriever = SPTBlendRetriever(engine, metadata)
 
-    def check_groups(*ids):
+    def check_groups(*ids) -> None:
         query_prompt_list = [tokens[i] for i in ids]
         input_ids_list = []
         blend_indices_list: List[List[int]] = []

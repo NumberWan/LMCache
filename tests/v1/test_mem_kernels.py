@@ -1,21 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import List
 import random
 
 # Third Party
-from utils import (
-    check_mem_obj_equal,
-    check_paged_kv_cache_equal,
-    generate_kv_cache_paged,
-    generate_kv_cache_paged_list_tensors,
-    generate_mla_kv_cache_paged_list_tensors,
-)
 import pytest
 import torch
 
 # First Party
 from lmcache.v1.memory_management import PinMemoryAllocator
 import lmcache.c_ops as lmc_ops
+
+# Local
+from .utils import (
+    check_mem_obj_equal,
+    check_paged_kv_cache_equal,
+    generate_kv_cache_paged,
+    generate_kv_cache_paged_list_tensors,
+    generate_mla_kv_cache_paged_list_tensors,
+)
 
 
 def _tuple_kv_to_blob(
@@ -150,6 +153,8 @@ def test_extract_and_load_back(num_tokens):
         slot_mapping,
     )
 
+    mem_allocator.close()
+
 
 @pytest.mark.parametrize("num_tokens", [256, 500, 1024, 8000])
 def test_multi_layer_kernel(num_tokens):
@@ -269,6 +274,8 @@ def test_multi_layer_kernel(num_tokens):
         kv_cache_new,
         slot_mapping,
     )
+
+    mem_allocator.close()
 
 
 @pytest.mark.parametrize("num_tokens", [256, 500, 1024, 8000])
@@ -399,6 +406,8 @@ def test_multi_layer_kernel_use_mla(num_tokens):
 
         assert (left_reshaped[slot_mapping, :] == right_reshaped[slot_mapping, :]).all()
 
+    mem_allocator.close()
+
 
 @pytest.mark.parametrize("num_tokens", [256, 500, 1024, 8000])
 @pytest.mark.parametrize("token_major", [True, False])
@@ -433,19 +442,19 @@ def test_single_layer_kernel(num_tokens, token_major):
     for layer_id in range(num_layers):
         lmc_ops.single_layer_kv_transfer(
             tmp_gpu_buffer,
-            kv_cache[layer_id][0],
-            kv_cache[layer_id][1],
+            kv_cache[layer_id],
             slot_mapping,
             True,
             token_major,
+            True,
         )
         lmc_ops.single_layer_kv_transfer(
             tmp_gpu_buffer,
-            kv_cache_new[layer_id][0],
-            kv_cache_new[layer_id][1],
+            kv_cache_new[layer_id],
             slot_mapping,
             False,
             token_major,
+            True,
         )
 
     check_paged_kv_cache_equal(

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import List
 
@@ -23,6 +24,9 @@ class MockConnector(RemoteConnector):
         self.storage = {}
 
     async def exists(self, key):
+        return key in self.storage
+
+    def exists_sync(self, key):
         return key in self.storage
 
     async def put(self, key, value):

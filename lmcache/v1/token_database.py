@@ -1,19 +1,6 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Any, Iterable, List, Optional, Tuple, Union
 import abc
 
 # Third Party
@@ -28,12 +15,7 @@ from lmcache.v1.config import LMCacheEngineConfig
 
 logger = init_logger(__name__)
 
-try:
-    # Third Party
-    from vllm.v1.core.kv_cache_utils import NONE_HASH
-except ImportError:
-    # Fallback to a default value if vllm is not available
-    NONE_HASH = 0
+NONE_HASH: int
 
 
 class TokenDatabase(metaclass=abc.ABCMeta):
@@ -48,6 +30,50 @@ class TokenDatabase(metaclass=abc.ABCMeta):
     """
 
     @abc.abstractmethod
+    def __init__(
+        self,
+        config: Optional[LMCacheEngineConfig] = None,
+        metadata: Optional[LMCacheEngineMetadata] = None,
+    ):
+        global NONE_HASH
+
+        vllm_is_available = True
+        try:
+            # Third Party
+            from vllm.utils import sha256, sha256_cbor_64bit
+        except ImportError:
+            # sha256, sha256_cbor_64bit are available through vLLM only
+            vllm_is_available = False
+
+        hash_algorithm: str
+        if config is not None:
+            hash_algorithm = config.pre_caching_hash_algorithm
+        else:  # Default value
+            hash_algorithm = "builtin"  # fallback to builtin hash
+
+        # Need to support vLLM hashing functions at a minimum
+        self.hash_func = (
+            sha256_cbor_64bit
+            if hash_algorithm == "sha256_cbor_64bit" and vllm_is_available
+            else sha256
+            if hash_algorithm == "sha256" and vllm_is_available
+            else hash
+        )
+
+        # NOTE: For centralized cache sharing, ensure PYTHONHASHSEED is
+        # set consistently across all processes (e.g., export PYTHONHASHSEED=0).
+        try:
+            # Third Party
+            from vllm.v1.core import kv_cache_utils
+
+            kv_cache_utils.init_none_hash(self.hash_func)
+            NONE_HASH = kv_cache_utils.NONE_HASH
+        except (ImportError, AttributeError):
+            NONE_HASH = 0
+
+        self.metadata = metadata
+
+    @abc.abstractmethod
     def process_tokens(
         self,
         tokens: Optional[Union[torch.Tensor, List[int]]] = None,
@@ -55,6 +81,7 @@ class TokenDatabase(metaclass=abc.ABCMeta):
         offsets: Optional[List[int]] = None,
         mask: Optional[torch.Tensor] = None,
         make_key: bool = True,
+        request_configs: Optional[dict] = None,
     ) -> Iterable[Tuple[int, int, Union[CacheEngineKey, int]]]:
         """Process the tokens and return the corresponding cache engine keys.
 
@@ -70,6 +97,11 @@ class TokenDatabase(metaclass=abc.ABCMeta):
             FFFFFTTTTTTT, where True means the tokens needs to be matched,
             and the Falses will ALWAYS be at the PREFIX of the tensor.
 
+        :param bool make_key: Whether to make the cache engine key or not.
+            If False, the hash value will be returned instead.
+
+        :param Optional[dict] request_configs: The configs of the request.
+
         :returns: A iterable of tuples with three elements. The first element
             is the start index of the tokens for the key. The second element
             is the end index of the tokens for the key. The third element is
@@ -78,22 +110,9 @@ class TokenDatabase(metaclass=abc.ABCMeta):
 
         raise NotImplementedError
 
-
-class ChunkedTokenDatabase(TokenDatabase):
-    def __init__(
-        self,
-        config: Optional[LMCacheEngineConfig] = None,
-        metadata: Optional[LMCacheEngineMetadata] = None,
+    def _make_key_by_hash(
+        self, chunk_hash: int, request_configs: Optional[dict] = None
     ):
-        # FIXME(Jiayi): cache_config.prefix_caching_hash_algo
-        self.hash_func = hash
-
-        if config is not None:
-            self.chunk_size = config.chunk_size
-            self.save_unfull_chunk = config.save_unfull_chunk
-        self.metadata = metadata
-
-    def _make_key_by_hash(self, chunk_hash: int):
         assert self.metadata is not None
         return CacheEngineKey(
             self.metadata.fmt,
@@ -101,21 +120,66 @@ class ChunkedTokenDatabase(TokenDatabase):
             self.metadata.world_size,
             self.metadata.worker_id,
             chunk_hash,
+            request_configs,
         )
 
-    def _get_init_hash(self) -> int:
-        return NONE_HASH
-
-    def _hash(
+    def _hash_tokens(
         self,
         tokens: Union[torch.Tensor, List[int]],
-        prefix_hash: int,
+        prefix_hash: Optional[int] = None,
+        extra_keys: Optional[list[Any]] = None,
     ) -> int:
         if isinstance(tokens, torch.Tensor):
             tokens_tuple = tuple(tokens.cpu().tolist())
         elif isinstance(tokens, list):
             tokens_tuple = tuple(tokens)
-        return self.hash_func((prefix_hash, tokens_tuple, None))
+        else:
+            raise ValueError(f"Unsupported tokens type: {type(tokens)}")
+
+        # Ignore extra keys for now
+        # Extra keys are for multi-modal inputs and
+        # request specific metadata (e.g., LoRA ID).
+        return self.hash_func((prefix_hash, tokens_tuple, extra_keys))
+
+
+class ChunkedTokenDatabase(TokenDatabase):
+    def __init__(
+        self,
+        config: Optional[LMCacheEngineConfig] = None,
+        metadata: Optional[LMCacheEngineMetadata] = None,
+    ):
+        super(ChunkedTokenDatabase, self).__init__(config, metadata)
+
+        if config is not None:
+            self.chunk_size = config.chunk_size
+            self.save_unfull_chunk = config.save_unfull_chunk
+
+            # Check for cross-process cache sharing setup
+            # Standard
+            import os
+
+            if os.getenv("PYTHONHASHSEED") is None:
+                if config.remote_url is not None:
+                    logger.warning(
+                        "Centralized cache sharing detected "
+                        "but PYTHONHASHSEED not set. "
+                        "For consistent caching, set: export PYTHONHASHSEED=0 "
+                        "before the engine starts."
+                    )
+                if config.enable_nixl:
+                    logger.error(
+                        "P/D Disaggregation detected "
+                        "but PYTHONHASHSEED not set. "
+                        "For consistent caching, set: export PYTHONHASHSEED=0 "
+                        "before the engine starts. "
+                        "This will cause incorrect KV cache transfer."
+                    )
+        else:  # Default values
+            self.chunk_size = 256
+            self.save_unfull_chunk = True
+
+    def _get_init_hash(self) -> int:
+        return NONE_HASH
 
     def _chunk_tokens(
         self,
@@ -144,7 +208,7 @@ class ChunkedTokenDatabase(TokenDatabase):
     ) -> Iterable[int]:
         prefix_hash = self._get_init_hash()
         for token_chunk in token_chunks:
-            prefix_hash = self._hash(token_chunk, prefix_hash)
+            prefix_hash = self._hash_tokens(token_chunk, prefix_hash)
             yield prefix_hash
 
     @_lmcache_nvtx_annotate
@@ -155,6 +219,7 @@ class ChunkedTokenDatabase(TokenDatabase):
         offsets: Optional[List[int]] = None,
         mask: Optional[torch.Tensor] = None,
         make_key: bool = True,
+        request_configs: Optional[dict] = None,
     ) -> Iterable[Tuple[int, int, Union[CacheEngineKey, int]]]:
         """Process the tokens/hashes and return the corresponding cache engine keys.
 
@@ -172,6 +237,8 @@ class ChunkedTokenDatabase(TokenDatabase):
 
         :param bool make_key: Whether to make the cache engine key or not.
             If False, the hash value will be returned instead.
+
+        :param Optional[dict] request_configs: The configs of the request.
 
         :returns: A iterable of tuples with three elements. The first element
             is the start index of the tokens for the key. The second element
@@ -202,7 +269,11 @@ class ChunkedTokenDatabase(TokenDatabase):
                     continue
                 else:
                     if make_key:
-                        yield start_idx, end_idx, self._make_key_by_hash(hash_val)
+                        yield (
+                            start_idx,
+                            end_idx,
+                            self._make_key_by_hash(hash_val, request_configs),
+                        )
                     else:
                         yield start_idx, end_idx, hash_val
         elif hashes is not None:
@@ -213,7 +284,11 @@ class ChunkedTokenDatabase(TokenDatabase):
             for hash_val, offset in zip(hashes, offsets, strict=False):
                 end_idx = start_idx + offset
                 if make_key:
-                    yield start_idx, end_idx, self._make_key_by_hash(hash_val)
+                    yield (
+                        start_idx,
+                        end_idx,
+                        self._make_key_by_hash(hash_val, request_configs),
+                    )
                 else:
                     yield start_idx, end_idx, hash_val
                 start_idx = end_idx
@@ -228,10 +303,9 @@ class SegmentTokenDatabase(TokenDatabase):
     """
 
     def __init__(self, config: LMCacheEngineConfig, metadata: LMCacheEngineMetadata):
-        self.tokenizer = AutoTokenizer.from_pretrained(metadata.model_name)
+        super(SegmentTokenDatabase, self).__init__(config, metadata)
 
-        # FIXME(Jiayi): cache_config.prefix_caching_hash_algo
-        self.hash_func = hash
+        self.tokenizer = AutoTokenizer.from_pretrained(metadata.model_name)
 
         # TODO (Jiayi): figure out how to decide when
         # to use `1:` (whether there's a special starting token
@@ -239,26 +313,6 @@ class SegmentTokenDatabase(TokenDatabase):
         self.sep_tokens = self.tokenizer.encode(config.blend_special_str)[1:]
         self.sep_tokens = torch.tensor(self.sep_tokens, device="cpu")
         self.sep_len = len(self.sep_tokens)
-        self.metadata = metadata
-
-    def _make_key_by_hash(self, chunk_hash: str):
-        return CacheEngineKey(
-            self.metadata.fmt,
-            self.metadata.model_name,
-            self.metadata.world_size,
-            self.metadata.worker_id,
-            chunk_hash,
-        )
-
-    def _hash(
-        self,
-        tokens: Union[torch.Tensor, List[int]],
-    ) -> int:
-        if isinstance(tokens, torch.Tensor):
-            tokens_tuple = tuple(tokens.cpu().tolist())
-        elif isinstance(tokens, list):
-            tokens_tuple = tuple(tokens)
-        return self.hash_func(tokens_tuple)
 
     def _fast_split_by_subtensor(self, tokens: torch.Tensor) -> Iterable[torch.Tensor]:
         """Match the `sep_tokens` with sliding windows"""
@@ -290,15 +344,26 @@ class SegmentTokenDatabase(TokenDatabase):
         offsets: Optional[List[int]] = None,
         mask: Optional[torch.Tensor] = None,
         make_key: bool = True,
+        request_configs: Optional[dict] = None,
     ) -> Iterable[Tuple[int, int, Union[CacheEngineKey, int]]]:
         """Process the tokens and return the corresponding cache engine keys.
 
         :param Union[torch.Tensor, List[int]] tokens: The tokens to process.
 
+        :param Optional[List[int]] hashes: The hashes to process. If provided,
+            it will be used instead of tokens to generate cache engine keys.
+
+        :param Optional[List[int]] offsets: The number of tokens in each chunk.
+
         :param Optional[torch.Tensor] mask: The mask for the tokens. Should
             have the same length as tokens. And the mask should ALWAYS be like
             FFFFFTTTTTTT, where True means the tokens needs to be matched,
             and the Falses will ALWAYS be at the PREFIX of the tensor.
+
+        :param bool make_key: Whether to make the cache engine key or not.
+            If False, the hash value will be returned instead.
+
+        :param Optional[dict] request_configs: The configs of the request.
 
         :returns: A iterable of tuples with three elements. The first element
             is the start index of the tokens for the key. The second element
@@ -307,9 +372,9 @@ class SegmentTokenDatabase(TokenDatabase):
 
         """
 
-        assert isinstance(tokens, torch.Tensor), (
-            "Only tokens in tensor format are supported for now."
-        )
+        if not isinstance(tokens, torch.Tensor):
+            tokens = torch.tensor(tokens, dtype=torch.long)
+
         if mask is not None:
             num_falses = mask.numel() - mask.long().sum().item()
         else:
@@ -333,8 +398,10 @@ class SegmentTokenDatabase(TokenDatabase):
                     yield (
                         start_idx,
                         end_idx,
-                        self._make_key_by_hash(self._hash(token_chunk)),
+                        self._make_key_by_hash(
+                            self._hash_tokens(token_chunk), request_configs
+                        ),
                     )
                 else:
-                    yield start_idx, end_idx, self._hash(token_chunk)
+                    yield start_idx, end_idx, self._hash_tokens(token_chunk)
             start_idx = end_idx

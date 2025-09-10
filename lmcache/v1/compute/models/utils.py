@@ -1,17 +1,4 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import Dict
 
@@ -24,16 +11,13 @@ from lmcache.logging import init_logger
 logger = init_logger(__name__)
 
 
-# TODO (Jiayi): Need to infer the model type from vllm model
-
-
-def infer_model_from_vllm(vllm_model, blender):
+def infer_model_from_vllm(vllm_model, blender, enable_sparse: bool = False):
     model_name = type(vllm_model).__name__
     if model_name == "LlamaForCausalLM":
         # First Party
         from lmcache.v1.compute.models.llama import LMCLlamaModel
 
-        return LMCLlamaModel(vllm_model, blender)
+        return LMCLlamaModel(vllm_model, blender, enable_sparse)
     else:
         # TODO(Jiayi): Add support for more models
         raise NotImplementedError(

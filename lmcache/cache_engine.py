@@ -1,17 +1,4 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 import logging
@@ -57,13 +44,13 @@ class LMCacheEngine:
         InitializeUsageContext(config, metadata)
         self.stats_monitor = LMCStatsMonitor.GetOrCreate()
 
-    def _make_key(self, chunk_hash: str, fmt: str) -> CacheEngineKey:
+    def _make_key(self, chunk_hash: int, fmt: str) -> CacheEngineKey:
         return CacheEngineKey(
             fmt,
             self.metadata.model_name,
             self.metadata.world_size,
             self.metadata.worker_id,
-            int(chunk_hash),
+            chunk_hash,
         )
 
     def _num_tokens_in_kv(
@@ -83,7 +70,7 @@ class LMCacheEngine:
         self,
         tokens: torch.Tensor,
         prefix_hash: int,
-    ) -> str:
+    ) -> int:
         return hash((prefix_hash, tuple(tokens.tolist())))
 
     def _chunk_tokens(
@@ -108,7 +95,7 @@ class LMCacheEngine:
         self,
         token_chunks: Iterable[torch.Tensor],
         num_skip_chunk: Optional[int] = 0,
-    ) -> List[str]:
+    ) -> List[int]:
         prefix_hash = self._get_init_hash()
         prefix_hashes = []
         for token_chunk in token_chunks:
@@ -210,7 +197,7 @@ class LMCacheEngine:
         kv_tensors: torch.Tensor,
         fmt: str,
         num_skip_prefix_chunk=0,
-    ) -> Iterable[Tuple[str, torch.Tensor]]:
+    ) -> Iterable[Tuple[int, torch.Tensor]]:
         """
         Skip the existing chunks and return the rest of the chunks
         """
@@ -244,7 +231,7 @@ class LMCacheEngine:
         fmt: str,
         num_skip_prefix_chunk=0,
         skip_existing=True,
-    ) -> Iterable[Tuple[str, torch.Tensor]]:
+    ) -> Iterable[Tuple[int, torch.Tensor]]:
         """
         Returns a generator of zipped (chunk_hash, chunk_kv) tuples
         """

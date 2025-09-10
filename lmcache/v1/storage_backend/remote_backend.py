@@ -1,21 +1,7 @@
-# Copyright 2024-2025 LMCache Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# SPDX-License-Identifier: Apache-2.0
 # Standard
 from concurrent.futures import Future, TimeoutError
-from functools import wraps
-from typing import List, Optional
+from typing import List, Optional, Sequence, Set
 import asyncio
 import threading
 import time
@@ -47,7 +33,8 @@ class RemoteBackend(StorageBackendInterface):
         dst_device: str = "cuda",
         lookup_server: Optional[LookupServerInterface] = None,
     ):
-        self.put_tasks: List[CacheEngineKey] = []
+        super().__init__(dst_device)
+        self.put_tasks: Set[CacheEngineKey] = set()
         self.lock = threading.Lock()
 
         assert config.remote_url is not None
@@ -66,7 +53,7 @@ class RemoteBackend(StorageBackendInterface):
         self.connection: Optional[RemoteConnector] = None
         self.min_reconnect_interval = 10
         self.failure_time = -1000000.0
-        self._init_connection()
+        self.init_connection()
 
         assert config.remote_serde is not None
         self.serializer, self.deserializer = CreateSerde(
@@ -75,8 +62,9 @@ class RemoteBackend(StorageBackendInterface):
 
         # Precompute MLA mode status
         self._mla_worker_id_as0_mode = (
-            config.extra_config is not None
-            and config.extra_config.get("remote_enable_mla_worker_id_as0", False)
+            config.get_extra_config_value(
+                "remote_enable_mla_worker_id_as0", metadata.use_mla
+            )
             and metadata.use_mla
             and metadata.world_size > 1
             and metadata.worker_id != 0
@@ -92,10 +80,20 @@ class RemoteBackend(StorageBackendInterface):
 
         self.stats_monitor = LMCStatsMonitor.GetOrCreate()
 
+        # Create RemoteMonitor instance, which initializes the
+        # connection status and active connector dynamically
+        # First Party
+        from lmcache.v1.storage_backend.remote_monitor import RemoteMonitor
+
+        self.remote_monitor = RemoteMonitor(self)
+
+        # Start the remote monitor thread (if ping is supported)
+        self.remote_monitor.start()
+
     def __str__(self):
         return self.__class__.__name__
 
-    def _init_connection(self):
+    def init_connection(self):
         # Initialize connection
         if self.connection is not None:
             return
@@ -113,6 +111,7 @@ class RemoteBackend(StorageBackendInterface):
                 self.loop,
                 self.local_cpu_backend,
                 self.config,
+                self.metadata,
             )
             logger.info(
                 f"Connection initialized/re-established at {self.config.remote_url}"
@@ -123,18 +122,6 @@ class RemoteBackend(StorageBackendInterface):
             logger.warning(f"Failed to initialize/re-establish remote connection: {e}")
             self.connection = None
 
-    @staticmethod
-    def _init_connection_wrapper(func):
-        @wraps(func)
-        def wrapper(self, *args, **kwargs):
-            self._init_connection()
-            result = func(self, *args, **kwargs)
-            return result
-
-        return wrapper
-
-    # TODO(Jiayi): handle `pin` semantics
-    @_init_connection_wrapper
     def contains(self, key: CacheEngineKey, pin: bool = False) -> bool:
         if self.connection is None:
             logger.warning("Connection is None in contains, returning False")
@@ -143,19 +130,26 @@ class RemoteBackend(StorageBackendInterface):
         # For MLA worker id as 0 mode, use worker_id 0
         if self._mla_worker_id_as0_mode:
             key = CacheEngineKey(
-                key.fmt, key.model_name, key.world_size, 0, key.chunk_hash
+                key.fmt,
+                key.model_name,
+                key.world_size,
+                0,
+                key.chunk_hash,
+                key.request_configs,
             )
 
-        future = asyncio.run_coroutine_threadsafe(
-            self.connection.exists(key), self.loop
-        )
         try:
-            res = future.result()
-            return res
+            if self.config.extra_config is not None and self.config.extra_config.get(
+                "use_exists_sync", False
+            ):
+                return self.connection.exists_sync(key)
+            else:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.connection.exists(key), self.loop
+                )
+                res = future.result()
+                return res
         except Exception as e:
-            with self.lock:
-                self.connection = None
-                self.failure_time = time.time()
             logger.warning(f"Remote connection failed in contains: {e}")
             logger.warning("Returning False")
             return False
@@ -168,28 +162,34 @@ class RemoteBackend(StorageBackendInterface):
         """
         Callback function for put tasks.
         """
-        self.lock.acquire()
-        self.put_tasks.remove(key)
-        self.lock.release()
+        with self.lock:
+            self.put_tasks.discard(key)
 
     def submit_put_task(
         self,
         key: CacheEngineKey,
         memory_obj: MemoryObj,
-    ) -> Optional[Future]:
+    ) -> Future:
+        def create_immediate_empty_future() -> Future:
+            f: Future = Future()
+            f.set_result(None)
+            return f
+
         if self.connection is None:
             logger.warning("Connection is None in submit_put_task, returning None")
-            return None
+            return create_immediate_empty_future()
 
         # If MLA worker id as 0 mode is enabled, skip put tasks
         if self._mla_worker_id_as0_mode:
-            return None
+            return create_immediate_empty_future()
+
+        if self.exists_in_put_tasks(key):
+            return create_immediate_empty_future()
 
         memory_obj.ref_count_up()
 
-        self.lock.acquire()
-        self.put_tasks.append(key)
-        self.lock.release()
+        with self.lock:
+            self.put_tasks.add(key)
 
         compressed_memory_obj = self.serializer.serialize(memory_obj)
         memory_obj.ref_count_down()
@@ -203,19 +203,49 @@ class RemoteBackend(StorageBackendInterface):
         future.add_done_callback(lambda_callback)
         return future
 
-    def batched_submit_put_task(
-        self, keys: List[CacheEngineKey], memory_objs: List[MemoryObj]
-    ) -> Optional[List[Future]]:
-        return [
-            self.submit_put_task(key, memory_obj)
-            for key, memory_obj in zip(keys, memory_objs, strict=False)
-        ]
+    def batched_put_callback(self, future: Future, keys: List[CacheEngineKey]):
+        """
+        Callback function for batched put tasks.
+        """
+        with self.lock:
+            self.put_tasks.difference_update(keys)
 
-    def submit_prefetch_task(
+    def batched_submit_put_task(
         self,
-        key: CacheEngineKey,
-    ) -> Optional[Future]:
-        raise NotImplementedError
+        keys: Sequence[CacheEngineKey],
+        memory_objs: List[MemoryObj],
+        transfer_spec=None,
+    ) -> None:
+        if self.connection is None:
+            logger.warning(
+                "Connection is None in batched_submit_put_task, returning None"
+            )
+            return
+        if self.connection.support_batched_put():
+            if self.connection is None:
+                logger.warning(
+                    "Connection is None in batched_submit_put_task, returning None"
+                )
+                return
+            if self._mla_worker_id_as0_mode:
+                return
+
+            compressed_memory_objs = []
+
+            for memory_obj in memory_objs:
+                memory_obj.ref_count_up()
+                compressed_memory_objs.append(self.serializer.serialize(memory_obj))
+                memory_obj.ref_count_down()
+
+            future = asyncio.run_coroutine_threadsafe(
+                self.connection.batched_put(keys, compressed_memory_objs),  # type: ignore
+                self.loop,
+            )
+            lambda_callback = lambda f: self.batched_put_callback(f, keys)  # type: ignore
+            future.add_done_callback(lambda_callback)
+        else:
+            for key, memory_obj in zip(keys, memory_objs, strict=False):
+                self.submit_put_task(key, memory_obj)
 
     @_lmcache_nvtx_annotate
     def get_blocking(
@@ -232,7 +262,12 @@ class RemoteBackend(StorageBackendInterface):
         # For MLA worker id as 0 mode, use worker_id 0
         if self._mla_worker_id_as0_mode:
             key = CacheEngineKey(
-                key.fmt, key.model_name, key.world_size, 0, key.chunk_hash
+                key.fmt,
+                key.model_name,
+                key.world_size,
+                0,
+                key.chunk_hash,
+                key.request_configs,
             )
         t1 = time.perf_counter()
         future = asyncio.run_coroutine_threadsafe(self.connection.get(key), self.loop)
@@ -243,9 +278,6 @@ class RemoteBackend(StorageBackendInterface):
             if isinstance(e, TimeoutError):
                 logger.warning("get blocking timeout, trigger cancel the future task")
                 future.cancel()
-            with self.lock:
-                self.connection = None
-                self.failure_time = time.time()
             logger.warning(f"Error occurred in get_blocking: {e}")
             logger.warning("Returning None")
             return None
@@ -262,11 +294,97 @@ class RemoteBackend(StorageBackendInterface):
         )
         return decompressed_memory_obj
 
-    def get_non_blocking(
+    def batched_get_blocking(
         self,
-        key: CacheEngineKey,
-    ) -> Optional[Future]:
-        raise NotImplementedError
+        keys: List[CacheEngineKey],
+    ) -> List[Optional[MemoryObj]]:
+        if self.connection is None:
+            logger.warning("Connection is None in batched_get_blocking, returning None")
+            return [None] * len(keys)
+
+        # For MLA worker id as 0 mode, use worker_id 0
+        if self._mla_worker_id_as0_mode:
+            new_keys = [
+                CacheEngineKey(
+                    key.fmt,
+                    key.model_name,
+                    key.world_size,
+                    0,
+                    key.chunk_hash,
+                    key.request_configs,
+                )
+                for key in keys
+            ]
+        else:
+            new_keys = keys
+
+        t1 = time.perf_counter()
+        # batched get
+        if self.connection.support_batched_get():
+            future = asyncio.run_coroutine_threadsafe(
+                self.connection.batched_get(new_keys), self.loop
+            )
+            try:
+                memory_objs = future.result(self.blocking_timeout_secs)
+            except Exception as e:
+                if isinstance(e, TimeoutError):
+                    logger.warning(
+                        "batched get blocking timeout, trigger cancel the future task"
+                    )
+                    future.cancel()
+                with self.lock:
+                    self.connection = None
+                    self.failure_time = time.time()
+                logger.warning(
+                    f"Error occurred in batched_get_blocking: {e}, returning None list"
+                )
+                return [None] * len(keys)
+        else:
+            futures = [
+                asyncio.run_coroutine_threadsafe(self.connection.get(key), self.loop)
+                for key in new_keys
+            ]
+            memory_objs = []
+            failed = False
+            for fut in futures:
+                if not failed:
+                    try:
+                        memory_obj = fut.result(self.blocking_timeout_secs)
+                    except Exception as e:
+                        failed = True
+                        if isinstance(e, TimeoutError):
+                            logger.warning(
+                                "get blocking timeout, trigger cancel the future task"
+                            )
+                            fut.cancel()
+                        with self.lock:
+                            self.connection = None
+                            self.failure_time = time.time()
+                        logger.warning(
+                            f"Error occurred in get_blocking: {e}, returning None"
+                        )
+                        memory_obj = None
+                    memory_objs.append(memory_obj)
+                else:
+                    memory_objs.append(None)
+                    fut.cancel()
+
+        t2 = time.perf_counter()
+        self.stats_monitor.update_interval_remote_time_to_get_sync((t2 - t1) * 1000)
+        decompressed_memory_objs: list[Optional[MemoryObj]] = []
+        for memory_obj in memory_objs:
+            if memory_obj is None:
+                decompressed_memory_objs.append(None)
+            else:
+                decompressed_memory_objs.append(
+                    self.deserializer.deserialize(memory_obj)
+                )
+
+        assert len(decompressed_memory_objs) == len(keys), (
+            f"keys length: {len(keys)}, "
+            f"decompressed memory objs length: {len(decompressed_memory_objs)}"
+        )
+        return decompressed_memory_objs
 
     def pin(self, key: CacheEngineKey) -> bool:
         logger.debug(
@@ -281,6 +399,9 @@ class RemoteBackend(StorageBackendInterface):
             "This method is a no-op and will return True."
         )
         return True
+
+    def remove(self, key, force=True):
+        raise NotImplementedError("Remote backend does not support remove now.")
 
     def close(self):
         try:
